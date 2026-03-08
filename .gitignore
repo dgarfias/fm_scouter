@@ -1,0 +1,29 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Cython generated files
+fm_scout/_parser.c
+fm_scout/*.so
+fm_scout/*.pyd
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# IDE / editor
+.cursor/
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Plans
+.cursor/
