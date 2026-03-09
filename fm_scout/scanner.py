@@ -36,6 +36,9 @@ class GamePointers:
     game_date_addr: int = 0
     game_date_day: int = 0
     game_date_year: int = 0
+    human_staff_addr: int = 0
+    human_person_addr: int = 0
+    human_club_name: str = ""
 
 
 class GameScanner:
@@ -53,18 +56,18 @@ class GameScanner:
             if 'fm.exe' in r.path.lower() and 'r' in r.permissions:
                 self.pointers.exe_base = r.start
                 return
-        for r in self.regions:
-            if 'x' in r.permissions and r.start > 0x100000:
-                self.pointers.exe_base = r.start
-                return
 
     def find_code_section(self):
-        """Find the main code section (.text / executable region)."""
+        """Find the main code section (r-xp region right after fm.exe base)."""
         exe_base = self.pointers.exe_base
         if not exe_base:
             return
         for r in self.regions:
-            if r.start >= exe_base and 'x' in r.permissions and 'r' in r.permissions:
+            if (r.start >= exe_base
+                    and 'x' in r.permissions
+                    and 'r' in r.permissions
+                    and 'w' not in r.permissions
+                    and (r.end - r.start) > 1_000_000):
                 self.pointers.code_start = r.start
                 self.pointers.code_end = r.end
                 size_mb = (r.end - r.start) // (1024 * 1024)
@@ -76,22 +79,57 @@ class GameScanner:
         pattern, mask = parse_aob_pattern(pattern_str)
         if regions is None:
             regions = self.regions
-        matches = []
         plen = len(pattern)
+        if plen == 0:
+            return []
+
+        # Fast path: choose the longest fixed-byte run as anchor and use
+        # bytes.find() to locate candidates, then verify masked bytes.
+        fixed_positions = [i for i, m in enumerate(mask) if m != 0]
+        if not fixed_positions:
+            return []
+
+        best_start = 0
+        best_len = 0
+        i = 0
+        while i < plen:
+            if mask[i] == 0:
+                i += 1
+                continue
+            run_start = i
+            while i < plen and mask[i] != 0:
+                i += 1
+            run_len = i - run_start
+            if run_len > best_len:
+                best_start = run_start
+                best_len = run_len
+
+        anchor = pattern[best_start:best_start + best_len]
+        matches: list[int] = []
+
         for region in regions:
             if 'r' not in region.permissions:
                 continue
             data = self.reader.read_bytes(region.start, region.end - region.start)
-            if data is None:
+            if data is None or len(data) < plen:
                 continue
-            for i in range(len(data) - plen + 1):
-                match = True
-                for j in range(plen):
-                    if mask[j] != 0 and data[i + j] != pattern[j]:
-                        match = False
-                        break
-                if match:
-                    matches.append(region.start + i)
+
+            data_len = len(data)
+            search_pos = 0
+            while True:
+                anchor_pos = data.find(anchor, search_pos)
+                if anchor_pos < 0:
+                    break
+                candidate = anchor_pos - best_start
+                if 0 <= candidate and candidate + plen <= data_len:
+                    ok = True
+                    for j in fixed_positions:
+                        if data[candidate + j] != pattern[j]:
+                            ok = False
+                            break
+                    if ok:
+                        matches.append(region.start + candidate)
+                search_pos = anchor_pos + 1
         return matches
 
     def resolve_dbt_root(self) -> bool:
@@ -104,7 +142,7 @@ class GameScanner:
             code_regions = [r for r in self.regions
                             if 'x' in r.permissions and 'r' in r.permissions]
 
-        pattern = "48 8B 05 ?? ?? ?? ?? 48 8B 48 ?? 48 8B 41"
+        pattern = "48 8D 0D ?? ?? ?? ?? 48 8D 15"
         logger.info(
             f"Scanning region {self.pointers.code_start:#x}-{self.pointers.code_end:#x} "
             f"({(self.pointers.code_end - self.pointers.code_start) // (1024 * 1024)}MB)"
@@ -121,14 +159,21 @@ class GameScanner:
             if data is None:
                 continue
             rip_offset = struct.unpack_from('<i', data, 3)[0]
-            target = match_addr + 7 + rip_offset
+            dbt_ptr = match_addr + 7 + rip_offset
 
-            dbt_ptr = self.reader.read_pointer(target)
-            if dbt_ptr and dbt_ptr != 0:
-                test = self.reader.read_pointer(dbt_ptr + 0x68)
-                if test and test != 0:
+            person_db = self.reader.read_pointer(dbt_ptr + 0x68)
+            if not person_db or person_db == 0:
+                continue
+            table_ptr = self.reader.read_pointer(person_db + 0x80)
+            if not table_ptr or table_ptr == 0:
+                continue
+            tbl_start = self.reader.read_pointer(table_ptr)
+            tbl_end = self.reader.read_pointer(table_ptr + 8)
+            if tbl_start and tbl_end and tbl_end > tbl_start:
+                count = (tbl_end - tbl_start) // 8
+                if 1000 < count < 500_000:
                     self.pointers.dbt_root = dbt_ptr
-                    logger.info(f"dbtRoot resolved at {dbt_ptr:#x} (first entry: {test:#x})")
+                    logger.info(f"dbtRoot resolved at {dbt_ptr:#x} (first entry: {hex(person_db)})")
                     return True
         return False
 
@@ -164,7 +209,7 @@ class GameScanner:
             return False
 
         vtable_counts: dict[int, int] = {}
-        sample_size = min(500, self.pointers.person_count)
+        sample_size = min(5000, self.pointers.person_count)
 
         for i in range(sample_size):
             ptr_addr = self.pointers.person_table_start + i * 8
@@ -201,7 +246,6 @@ class GameScanner:
 
     def find_game_date(self) -> bool:
         """Find the current game date via datTimeRoot AOB."""
-        pattern = "48 8B 05 ?? ?? ?? ?? 8B 00"
         code_regions = [r for r in self.regions
                         if r.start >= self.pointers.code_start
                         and r.end <= self.pointers.code_end
@@ -214,8 +258,35 @@ class GameScanner:
             f"Scanning region {self.pointers.code_start:#x}-{self.pointers.code_end:#x} "
             f"({(self.pointers.code_end - self.pointers.code_start) // (1024 * 1024)}MB)"
         )
-        matches = self.scan_for_pattern(pattern, code_regions)
 
+        # FM24 (24.4.2) signature from CE table:
+        #   83 F2 01 8B 05 ?? ?? ?? ?? 66 09
+        # datTimeRoot = RIP-relative target of the MOV at +3 (disp32 at +5)
+        ce_pattern = "83 F2 01 8B 05 ?? ?? ?? ?? 66 09"
+        ce_matches = self.scan_for_pattern(ce_pattern, code_regions)
+        for match_addr in ce_matches:
+            data = self.reader.read_bytes(match_addr, 16)
+            if data is None or len(data) < 10:
+                continue
+            rip_offset = struct.unpack_from('<i', data, 5)[0]
+            target = match_addr + 9 + rip_offset
+            packed = self.reader.read_uint32(target)
+            year_raw = self.reader.read_bytes(target + 2, 2)
+            if packed is None or not year_raw or len(year_raw) < 2:
+                continue
+            year = struct.unpack('<H', year_raw)[0]
+            # Current day is stored in low 9 bits (Mask 0x1FF in CE table)
+            day = packed & 0x1FF
+            if 2020 <= year <= 2100 and 1 <= day <= 366:
+                self.pointers.game_date_addr = target
+                self.pointers.game_date_day = day
+                self.pointers.game_date_year = year
+                logger.info(f"Game date: day {day}, year {year}")
+                return True
+
+        # Older fallback signature
+        pattern = "48 8B 05 ?? ?? ?? ?? 8B 00"
+        matches = self.scan_for_pattern(pattern, code_regions)
         for match_addr in matches:
             data = self.reader.read_bytes(match_addr, 16)
             if data is None:
@@ -226,15 +297,109 @@ class GameScanner:
             date_data = self.reader.read_bytes(target, 4)
             if date_data:
                 packed = struct.unpack('<I', date_data)[0]
-                year = (packed >> 16) & 0xFFFF
-                day = packed & 0xFFFF
-                if 2020 <= year <= 2100 and 1 <= day <= 366:
+                year16 = (packed >> 16) & 0xFFFF
+                day16 = packed & 0xFFFF
+                if 2020 <= year16 <= 2100 and 1 <= day16 <= 366:
                     self.pointers.game_date_addr = target
-                    self.pointers.game_date_day = day
-                    self.pointers.game_date_year = year
-                    logger.info(f"Game date: day {day}, year {year}")
+                    self.pointers.game_date_day = day16
+                    self.pointers.game_date_year = year16
+                    logger.info(f"Game date: day {day16}, year {year16}")
                     return True
         return False
+
+    def resolve_human_manager_club(self) -> str | None:
+        """Resolve the current human manager's club name from memory."""
+        from .offsets import STRUCT_OFFSETS
+
+        code_regions = [r for r in self.regions
+                        if r.start >= self.pointers.code_start
+                        and r.end <= self.pointers.code_end
+                        and 'r' in r.permissions]
+        if not code_regions:
+            code_regions = [r for r in self.regions
+                            if 'x' in r.permissions and 'r' in r.permissions]
+
+        # CE: HUMAN_NON_PLAYER_MANAGER
+        # aob: 48 8B 35 ?? ?? ?? ?? 48 8B 56 18 4C 8B 76 20 49 29 D6 B0 01 49 83 FE 10
+        pattern = (
+            "48 8B 35 ?? ?? ?? ?? 48 8B 56 18 4C 8B 76 20 "
+            "49 29 D6 B0 01 49 83 FE 10"
+        )
+        matches = self.scan_for_pattern(pattern, code_regions)
+        if not matches:
+            return None
+
+        for match_addr in matches:
+            data = self.reader.read_bytes(match_addr, 12)
+            if data is None or len(data) < 7:
+                continue
+            rel = struct.unpack_from('<i', data, 3)[0]
+            ptr_addr = match_addr + 7 + rel
+            root_ptr = self.reader.read_pointer(ptr_addr)
+            if not root_ptr:
+                continue
+
+            manager_bases: list[int] = []
+            vec_start = self.reader.read_pointer(root_ptr + 0x18)
+            vec_end = self.reader.read_pointer(root_ptr + 0x20)
+            if vec_start and vec_end and vec_end > vec_start and (vec_end - vec_start) <= 0x2000:
+                for addr in range(vec_start, vec_end, 8):
+                    base = self.reader.read_pointer(addr)
+                    if base:
+                        manager_bases.append(base)
+            if not manager_bases:
+                manager_bases.append(root_ptr)
+
+            for staff_ptr in manager_bases:
+                # Human manager objects embed the person object at a positive
+                # offset. Detect that offset dynamically by checking the
+                # vtable back-offset metadata (type_info+4).
+                for person_off in range(0x80, 0x901, 8):
+                    person_ptr = staff_ptr + person_off
+                    vtable = self.reader.read_pointer(person_ptr)
+                    if not vtable:
+                        continue
+                    type_info = self.reader.read_pointer(vtable - 8)
+                    if not type_info:
+                        continue
+                    back_off = self.reader.read_uint32(type_info + 4)
+                    if back_off != person_off:
+                        continue
+
+                    uid = self.reader.read_uint32(person_ptr + STRUCT_OFFSETS.duni)
+                    if not uid:
+                        continue
+
+                    contract_ptr = self.reader.read_pointer(person_ptr + STRUCT_OFFSETS.pcontract)
+                    if not contract_ptr:
+                        continue
+                    team_ptr = self.reader.read_pointer(contract_ptr + STRUCT_OFFSETS.contract_team)
+                    if not team_ptr:
+                        continue
+                    club_ptr = self.reader.read_pointer(team_ptr + STRUCT_OFFSETS.team_club)
+                    if not club_ptr:
+                        continue
+                    name_entry = self.reader.read_pointer(club_ptr + STRUCT_OFFSETS.club_name_entry)
+                    if not name_entry:
+                        continue
+
+                    club_name = self.reader.read_string(name_entry + 4, max_len=96)
+                    if not club_name or not club_name.isprintable():
+                        head = self.reader.read_pointer(name_entry)
+                        if head:
+                            club_name = self.reader.read_string(head + 4, max_len=96)
+                    if not club_name or not club_name.isprintable():
+                        continue
+
+                    self.pointers.human_staff_addr = staff_ptr
+                    self.pointers.human_person_addr = person_ptr
+                    self.pointers.human_club_name = club_name
+                    logger.info(
+                        "Human manager resolved: staff=%#x person=%#x club=%s",
+                        staff_ptr, person_ptr, club_name,
+                    )
+                    return club_name
+        return None
 
     def get_person_pointers(self) -> list[int]:
         """Read all person pointers from the person table."""
@@ -269,4 +434,5 @@ class GameScanner:
             return False
         self.discover_vtables()
         self.find_game_date()
+        self.resolve_human_manager_club()
         return True

@@ -1,32 +1,22 @@
 """Player data model and memory reader for FM24.
 
-Reads player (plao) and person (pero) data from the FM24 process memory,
-supporting both a Cython-accelerated fast path and a pure-Python fallback.
-Batch reads use multi-phase I/O to minimise syscall overhead.
+Reads player (plao) and person (pero) data from the FM24 process memory
+using pure-Python parsing and batched I/O.
 """
 
 import struct
-import os
 import logging
 from dataclasses import dataclass, field
 from typing import Optional
 
 from .offsets import (
     ATTR_OFFSETS, STRUCT_OFFSETS, POSITION_NAMES, PERSONALITY_NAMES,
-    StructOffsets, AttributeOffsets,
+    ATTRIBUTE_BYTE_OFFSETS, StructOffsets, AttributeOffsets,
 )
 from .memory import MemoryReader
 
 logger = logging.getLogger('fm_scout')
 
-try:
-    from ._parser import (
-        CyPlayerAttributes, parse_combined_data, parse_all_combined,
-        parse_contract_scalars,
-    )
-    _HAS_CYTHON = True
-except ImportError:
-    _HAS_CYTHON = False
 
 _ALL_ATTR_NAMES: tuple[str, ...] = (
     AttributeOffsets.TECHNICAL_FIELDS
@@ -109,8 +99,8 @@ class PlayerAttributes:
     injury_proneness: int = 0
     versatility: int = 0
 
-    def get(self, name: str) -> int:
-        return getattr(self, name, 0)
+    def get(self, name: str, default: int = 0) -> int:
+        return getattr(self, name, default)
 
     def to_dict(self) -> dict:
         return {name: getattr(self, name, 0) for name in _ALL_ATTR_NAMES}
@@ -140,6 +130,7 @@ class Player:
     league: str = ""
     league_nation: str = ""
     league_continent: str = ""
+    league_type: int = -1
     on_loan: bool = False
     parent_club: str = ""
 
@@ -182,6 +173,25 @@ class Player:
             return ", ".join(good)
         return self.best_position
 
+    @property
+    def reputation(self) -> int:
+        """Compatibility alias for legacy UI code."""
+        return self.current_reputation
+
+    @property
+    def birth_day(self) -> int:
+        """Compatibility alias for legacy UI code."""
+        return self.birth_day_of_year
+
+    def __getattr__(self, name: str):
+        """Expose nested attribute/personality values as legacy flat fields."""
+        if name in _ALL_ATTR_NAMES:
+            return self.attributes.get(name)
+        if name.startswith("pers_"):
+            key = name[5:].replace("_", " ").title()
+            return self.personality.get(key, 0)
+        raise AttributeError(name)
+
     def to_dict(self) -> dict:
         return {
             'uid': self.uid,
@@ -220,8 +230,8 @@ class Player:
 class PlayerReader:
     """Reads player data from FM24 process memory.
 
-    Supports both Cython-accelerated and pure-Python parsing paths.
-    Uses multi-phase batch I/O for efficient bulk reads of 100k+ players.
+    Uses pure-Python parsing with multi-phase batch I/O for efficient
+    bulk reads of 100k+ players.
     """
 
     PLAYER_VTABLES: set[int] = set()
@@ -248,8 +258,10 @@ class PlayerReader:
         self._personality_names_8 = PERSONALITY_NAMES[:8]
         self._position_names = POSITION_NAMES
 
-        # Sequential byte offsets for the 54-byte attribute array
-        self._attr_byte_offsets = tuple(range(len(_ALL_ATTR_NAMES)))
+        # Explicit per-attribute byte offsets inside plao.Patr.
+        self._attr_byte_offsets = tuple(
+            ATTRIBUTE_BYTE_OFFSETS[name] for name in _ALL_ATTR_NAMES
+        )
 
         # Combined read geometry:
         #   read_start = plao_base + pwes
@@ -276,13 +288,14 @@ class PlayerReader:
             return None
 
         type_offset = so.player_offset
-        if vtable not in self.PLAYER_VTABLES:
-            type_info = reader.read_pointer(vtable - 8)
-            if not type_info:
-                return None
-            offset_val = reader.read_uint32(type_info + 4)
-            if offset_val is None or offset_val != type_offset:
-                return None
+        if self.PLAYER_VTABLES and vtable not in self.PLAYER_VTABLES:
+            return None
+        type_info = reader.read_pointer(vtable - 8)
+        if not type_info:
+            return None
+        offset_val = reader.read_uint32(type_info + 4)
+        if offset_val is None or offset_val != type_offset:
+            return None
 
         read_start = person_ptr - type_offset + so.pwes
         combined = reader.read_bytes(read_start, self._combined_size)
@@ -295,42 +308,10 @@ class PlayerReader:
             vtable=vtable,
         )
 
-        if _HAS_CYTHON:
-            row = parse_combined_data(
-                combined, self._pero_in_combined,
-                so.pwes, so.phes, so.pcrp, so.pwrp,
-                so.pcab, so.ppab, so.ppos, so.patr,
-                so.duni, so.pdob_day, so.pdob_year, so.pada,
-                so.pcontract, so.attr_scale,
-                self._attr_byte_offsets, self._position_names,
-                self._personality_names_8, so.ploan_contract,
-            )
-            if row is None:
-                return None
-
-            player.uid = row[0]
-            player.birth_year = row[1]
-            player.birth_day_of_year = row[2]
-            player.weight = row[3]
-            player.height = row[4]
-            player.current_reputation = row[5]
-            player.world_reputation = row[6]
-            player.current_ability = row[7]
-            player.potential_ability = row[8]
-            contract_ptr = row[9]
-            player.positions = row[10]
-            player.attributes = self._build_attrs(row[11])
-            player.personality = row[12]
-            fna_ptr = row[13]
-            sna_ptr = row[14]
-            cna_ptr = row[15]
-            nti_ptr = row[16]
-            loan_ptr = row[17]
-        else:
-            result = self._parse_combined_py(combined, player)
-            if result is None:
-                return None
-            contract_ptr, loan_ptr, fna_ptr, sna_ptr, cna_ptr, nti_ptr = result
+        result = self._parse_combined_py(combined, player)
+        if result is None:
+            return None
+        contract_ptr, loan_ptr, fna_ptr, sna_ptr, cna_ptr, nti_ptr = result
 
         player.first_name = self._resolve_name(fna_ptr)
         player.last_name = self._resolve_name(sna_ptr)
@@ -360,23 +341,46 @@ class PlayerReader:
         """
         reader = self.reader
         so = self.so
-        pero_in = self._pero_in_combined
         combined_size = self._combined_size
         player_vtables = self.PLAYER_VTABLES
 
-        if not person_ptrs or not player_vtables:
+        if not person_ptrs:
             return []
+
+        # If vtable discovery is incomplete, validate each candidate individually.
+        if not player_vtables:
+            players: list[Player] = []
+            for ptr in person_ptrs:
+                p = self.read_player(ptr)
+                if p is not None:
+                    players.append(p)
+            logger.info(
+                "read_all_players: %d players from %d entries (fallback mode)",
+                len(players), len(person_ptrs),
+            )
+            return players
 
         # ---- Phase 1: batch vtable prefilter ----
 
         vtable_results = reader.batch_read_u64(person_ptrs)
 
         player_offset = so.player_offset
+        vtable_is_player: dict[int, bool] = {}
         candidates: list[tuple[int, int, int]] = []
         read_addrs: list[int] = []
 
         for ptr, vtable in vtable_results:
             if vtable in player_vtables:
+                is_player = vtable_is_player.get(vtable)
+                if is_player is None:
+                    type_info = reader.read_pointer(vtable - 8)
+                    offset_val = (
+                        reader.read_uint32(type_info + 4) if type_info else None
+                    )
+                    is_player = offset_val == player_offset
+                    vtable_is_player[vtable] = is_player
+                if not is_player:
+                    continue
                 candidates.append((ptr, vtable, player_offset))
                 read_addrs.append(ptr - player_offset + so.pwes)
 
@@ -404,107 +408,47 @@ class PlayerReader:
         name_cache = self._name_cache
         nation_cache = self._nation_cache
 
-        if _HAS_CYTHON:
-            combined_list = [combined_data.get(addr) for addr in read_addrs]
+        parsed: list[tuple] = []
 
-            rows = parse_all_combined(
-                combined_list, candidates,
-                pero_in,
-                so.pwes, so.phes, so.pcrp, so.pwrp,
-                so.pcab, so.ppab, so.ppos, so.patr,
-                so.duni, so.pdob_day, so.pdob_year, so.pada,
-                so.pcontract, so.attr_scale,
-                self._attr_byte_offsets, self._position_names,
-                self._personality_names_8, so.ploan_contract,
+        for i, (ptr, vtable, type_offset) in enumerate(candidates):
+            combined = combined_data.get(read_addrs[i])
+            if combined is None:
+                continue
+
+            player = Player(
+                address=ptr,
+                plao_address=ptr - type_offset,
+                vtable=vtable,
             )
+            result = self._parse_combined_py(combined, player)
+            if result is None:
+                continue
 
-            # First pass: collect name/nation pointers that need resolution
-            valid_rows: list[tuple] = []
-            for row in rows:
-                if row is None:
-                    continue
-                valid_rows.append(row)
-                for p in (row[15], row[16], row[17]):
-                    if p and p not in name_cache:
-                        name_ptrs_needed.add(p)
-                nti = row[18]
-                if nti and nti not in nation_cache:
-                    nation_ptrs_needed.add(nti)
+            contract_ptr, loan_ptr, fna_ptr, sna_ptr, cna_ptr, nti_ptr = result
+            for p in (fna_ptr, sna_ptr, cna_ptr):
+                if p and p not in name_cache:
+                    name_ptrs_needed.add(p)
+            if nti_ptr and nti_ptr not in nation_cache:
+                nation_ptrs_needed.add(nti_ptr)
 
-            # Batch resolve all names and nationalities
-            if name_ptrs_needed:
-                self._batch_resolve_names(name_ptrs_needed)
-            if nation_ptrs_needed:
-                self._batch_resolve_nations(nation_ptrs_needed)
+            parsed.append((
+                player, contract_ptr, loan_ptr,
+                fna_ptr, sna_ptr, cna_ptr, nti_ptr,
+            ))
 
-            # Second pass: build Player objects with resolved names
-            for row in valid_rows:
-                ptr, type_off = row[0], row[1]
-                player = Player(
-                    address=ptr,
-                    plao_address=ptr - type_off,
-                    uid=row[2],
-                    birth_year=row[3],
-                    birth_day_of_year=row[4],
-                    weight=row[5],
-                    height=row[6],
-                    current_reputation=row[7],
-                    world_reputation=row[8],
-                    current_ability=row[9],
-                    potential_ability=row[10],
-                    positions=row[12],
-                    attributes=self._build_attrs(row[13]),
-                    personality=row[14],
-                    first_name=name_cache.get(row[15], ""),
-                    last_name=name_cache.get(row[16], ""),
-                    common_name=name_cache.get(row[17], ""),
-                    nationality=nation_cache.get(row[18], ""),
-                )
-                pending.append((player, row[11], row[19]))
+        # Batch resolve all names and nationalities
+        if name_ptrs_needed:
+            self._batch_resolve_names(name_ptrs_needed)
+        if nation_ptrs_needed:
+            self._batch_resolve_nations(nation_ptrs_needed)
 
-        else:
-            # Python fallback: parse each buffer, then batch resolve names
-            parsed: list[tuple] = []
-
-            for i, (ptr, vtable, type_offset) in enumerate(candidates):
-                combined = combined_data.get(read_addrs[i])
-                if combined is None:
-                    continue
-
-                player = Player(
-                    address=ptr,
-                    plao_address=ptr - type_offset,
-                    vtable=vtable,
-                )
-                result = self._parse_combined_py(combined, player)
-                if result is None:
-                    continue
-
-                contract_ptr, loan_ptr, fna_ptr, sna_ptr, cna_ptr, nti_ptr = result
-                for p in (fna_ptr, sna_ptr, cna_ptr):
-                    if p and p not in name_cache:
-                        name_ptrs_needed.add(p)
-                if nti_ptr and nti_ptr not in nation_cache:
-                    nation_ptrs_needed.add(nti_ptr)
-
-                parsed.append((
-                    player, contract_ptr, loan_ptr,
-                    fna_ptr, sna_ptr, cna_ptr, nti_ptr,
-                ))
-
-            # Batch resolve all names and nationalities
-            if name_ptrs_needed:
-                self._batch_resolve_names(name_ptrs_needed)
-            if nation_ptrs_needed:
-                self._batch_resolve_nations(nation_ptrs_needed)
-
-            # Assign resolved names and build pending list
-            for player, contract_ptr, loan_ptr, fna, sna, cna, nti in parsed:
-                player.first_name = name_cache.get(fna, "")
-                player.last_name = name_cache.get(sna, "")
-                player.common_name = name_cache.get(cna, "")
-                player.nationality = nation_cache.get(nti, "")
-                pending.append((player, contract_ptr, loan_ptr))
+        # Assign resolved names and build pending list
+        for player, contract_ptr, loan_ptr, fna, sna, cna, nti in parsed:
+            player.first_name = name_cache.get(fna, "")
+            player.last_name = name_cache.get(sna, "")
+            player.common_name = name_cache.get(cna, "")
+            player.nationality = nation_cache.get(nti, "")
+            pending.append((player, contract_ptr, loan_ptr))
 
         logger.debug("Phase 3: %d players parsed", len(pending))
         if not pending:
@@ -529,28 +473,13 @@ class PlayerReader:
 
         # ---- Phase 5: parse contracts, resolve clubs, handle loans ----
 
-        c_team = so.contract_team
         players: list[Player] = []
 
         for player, contract_ptr, loan_ptr in pending:
             if contract_ptr:
                 cdata = contract_data.get(contract_ptr)
                 if cdata:
-                    if _HAS_CYTHON:
-                        cvals = parse_contract_scalars(
-                            cdata,
-                            so.contract_wage, so.contract_expiry,
-                            so.pffl, so.contract_transfer_opts,
-                            so.contract_option_years, c_team,
-                        )
-                        player.wage = cvals[0]
-                        player.contract_expiry = cvals[1]
-                        self._apply_contract_flags(player, cvals[2])
-                        player.contract_transfer_opts = cvals[3]
-                        player.contract_option_years = cvals[4]
-                        team_ptr = cvals[5]
-                    else:
-                        team_ptr = self._parse_contract_data(player, cdata)
+                    team_ptr = self._parse_contract_data(player, cdata)
 
                     if team_ptr:
                         self._resolve_club_chain(player, team_ptr)
@@ -597,8 +526,8 @@ class PlayerReader:
         player.height = height if 100 <= height <= 230 else 0
         player.current_reputation = crp
         player.world_reputation = wrp
-        player.current_ability = ca
-        player.potential_ability = pa
+        player.current_ability = self._normalize_ability(ca)
+        player.potential_ability = self._normalize_ability(pa)
 
         # Positions (already 1-20 scale in memory)
         pos_off = so.ppos - pwes
@@ -655,9 +584,16 @@ class PlayerReader:
         return contract_ptr, loan_ptr, fna_ptr, sna_ptr, cna_ptr, nti_ptr
 
     @staticmethod
-    def _build_attrs(cy_attrs) -> PlayerAttributes:
-        """Convert a CyPlayerAttributes instance to a PlayerAttributes dataclass."""
-        return PlayerAttributes(**cy_attrs.to_dict())
+    def _normalize_ability(val: int) -> int:
+        """Normalize FM ability values across known storage scales."""
+        if val <= 0:
+            return 0
+        # Some builds expose CA/PA scaled by 100 (e.g. 7500 -> 75).
+        if val > 250:
+            val = (val + 50) // 100
+        if val > 200:
+            return 200
+        return val
 
     # ------------------------------------------------------------------ #
     #  Batch name / nationality resolution                                #
@@ -692,13 +628,25 @@ class PlayerReader:
         cache = self._name_cache
         buf_size = self._NAME_BUF_SIZE
 
-        # Batch read string buffers at ptr+4 for all uncached entries
-        string_addrs = [p + 4 for p in ptrs]
-        bufs = reader.batch_read_fixed(string_addrs, buf_size)
+        # Some builds store a wrapper node at name_ptr where [0] points to
+        # the actual name entry; others store the entry directly.
+        # Read both forms in batch and prefer the indirect form when present.
+        direct_addrs = [p + 4 for p in ptrs]
+        direct_bufs = reader.batch_read_fixed(direct_addrs, buf_size)
+
+        head_ptrs = dict(reader.batch_read_u64(list(ptrs)))
+        indirect_addrs = [q + 4 for q in head_ptrs.values() if q]
+        indirect_bufs = reader.batch_read_fixed(indirect_addrs, buf_size) if indirect_addrs else {}
 
         for ptr in ptrs:
-            raw = bufs.get(ptr + 4)
-            name = self._parse_string_buf(raw) if raw else ""
+            name = ""
+            head = head_ptrs.get(ptr, 0)
+            if head:
+                raw = indirect_bufs.get(head + 4)
+                name = self._parse_string_buf(raw) if raw else ""
+            if not name:
+                raw = direct_bufs.get(ptr + 4)
+                name = self._parse_string_buf(raw) if raw else ""
             cache[ptr] = name
 
     def _batch_resolve_nations(self, ptrs: set[int]):
@@ -734,14 +682,25 @@ class PlayerReader:
         if not string_read_addrs:
             return
 
-        # Phase B: batch read name strings
-        string_bufs = reader.batch_read_fixed(
-            string_read_addrs, self._NATION_NAME_BUF_SIZE,
+        # Phase B: batch read name-entry heads and direct string regions.
+        string_bufs = reader.batch_read_fixed(string_read_addrs, self._NATION_NAME_BUF_SIZE)
+        head_ptrs = dict(reader.batch_read_u64(list(name_entry_map.values())))
+        indirect_addrs = [q + 4 for q in head_ptrs.values() if q]
+        indirect_bufs = (
+            reader.batch_read_fixed(indirect_addrs, self._NATION_NAME_BUF_SIZE)
+            if indirect_addrs
+            else {}
         )
 
         for ptr, name_entry in name_entry_map.items():
-            raw = string_bufs.get(name_entry + 4)
-            nation = self._parse_string_buf(raw) if raw else ""
+            nation = ""
+            head = head_ptrs.get(name_entry, 0)
+            if head:
+                raw = indirect_bufs.get(head + 4)
+                nation = self._parse_string_buf(raw) if raw else ""
+            if not nation:
+                raw = string_bufs.get(name_entry + 4)
+                nation = self._parse_string_buf(raw) if raw else ""
             cache[ptr] = nation
 
     # ------------------------------------------------------------------ #
@@ -755,8 +714,16 @@ class PlayerReader:
         cached = self._name_cache.get(ptr)
         if cached is not None:
             return cached
+        name = ""
         s = self.reader.read_string(ptr + 4, max_len=self._NAME_BUF_SIZE)
-        name = s if s and s.isprintable() else ""
+        if s and s.isprintable():
+            name = s
+        if not name:
+            head = self.reader.read_pointer(ptr)
+            if head:
+                s2 = self.reader.read_string(head + 4, max_len=self._NAME_BUF_SIZE)
+                if s2 and s2.isprintable():
+                    name = s2
         self._name_cache[ptr] = name
         return name
 
@@ -770,11 +737,15 @@ class PlayerReader:
         name_entry = self.reader.read_pointer(ptr + self.so.nation_name)
         nation = ""
         if name_entry:
-            s = self.reader.read_string(
-                name_entry + 4, max_len=self._NATION_NAME_BUF_SIZE,
-            )
+            s = self.reader.read_string(name_entry + 4, max_len=self._NATION_NAME_BUF_SIZE)
             if s and s.isprintable():
                 nation = s
+            if not nation:
+                head = self.reader.read_pointer(name_entry)
+                if head:
+                    s2 = self.reader.read_string(head + 4, max_len=self._NATION_NAME_BUF_SIZE)
+                    if s2 and s2.isprintable():
+                        nation = s2
         self._nation_cache[ptr] = nation
         return nation
 
@@ -788,28 +759,13 @@ class PlayerReader:
         if cdata is None or len(cdata) < self._CONTRACT_READ_SIZE:
             return
 
-        so = self.so
-        if _HAS_CYTHON:
-            cvals = parse_contract_scalars(
-                cdata,
-                so.contract_wage, so.contract_expiry,
-                so.pffl, so.contract_transfer_opts,
-                so.contract_option_years, so.contract_team,
-            )
-            player.wage = cvals[0]
-            player.contract_expiry = cvals[1]
-            self._apply_contract_flags(player, cvals[2])
-            player.contract_transfer_opts = cvals[3]
-            player.contract_option_years = cvals[4]
-            team_ptr = cvals[5]
-        else:
-            team_ptr = self._parse_contract_data(player, cdata)
+        team_ptr = self._parse_contract_data(player, cdata)
 
         if team_ptr:
             self._resolve_club_chain(player, team_ptr)
 
     def _parse_contract_data(self, player: Player, cdata: bytes) -> int:
-        """Python fallback for contract parsing.  Returns team_ptr."""
+        """Parse contract data and return team_ptr."""
         so = self.so
 
         player.wage = struct.unpack_from('<I', cdata, so.contract_wage)[0]
@@ -817,7 +773,7 @@ class PlayerReader:
         expiry_raw = struct.unpack_from('<I', cdata, so.contract_expiry)[0]
         expiry_year = (expiry_raw >> 16) & 0xFFFF
         if 2000 <= expiry_year <= 2100:
-            player.contract_expiry = expiry_year
+            player.contract_expiry = expiry_raw
 
         flags = struct.unpack_from('<I', cdata, so.pffl)[0]
         self._apply_contract_flags(player, flags)
@@ -860,6 +816,7 @@ class PlayerReader:
             player.league = cached[1]
             player.league_nation = cached[2]
             player.league_continent = cached[3]
+            player.league_type = cached[4]
             return
 
         reader = self.reader
@@ -868,6 +825,7 @@ class PlayerReader:
         league_name = ""
         league_nation = ""
         league_continent = ""
+        league_type = -1
 
         # team + 0x30 -> club_ptr -> club + 0xC0 -> name_entry -> string at +4
         club_ptr = reader.read_pointer(team_ptr + so.team_club)
@@ -878,7 +836,7 @@ class PlayerReader:
                 if s and s.isprintable():
                     club_name = s
 
-        # team + 0x50 -> competition -> name, nation, continent
+        # team + 0x50 -> competition -> name, nation, continent, type
         comp_ptr = reader.read_pointer(team_ptr + so.team_competition)
         if comp_ptr:
             comp_name_entry = reader.read_pointer(
@@ -888,6 +846,10 @@ class PlayerReader:
                 s = reader.read_string(comp_name_entry + 4, max_len=96)
                 if s and s.isprintable():
                     league_name = s
+
+            type_byte = reader.read_bytes(comp_ptr + so.competition_type, 1)
+            if type_byte:
+                league_type = type_byte[0]
 
             nation_ptr = reader.read_pointer(
                 comp_ptr + so.competition_nation,
@@ -913,12 +875,13 @@ class PlayerReader:
                         if s and s.isprintable():
                             league_continent = s
 
-        result = (club_name, league_name, league_nation, league_continent)
+        result = (club_name, league_name, league_nation, league_continent, league_type)
         self._club_cache[team_ptr] = result
         player.club = club_name
         player.league = league_name
         player.league_nation = league_nation
         player.league_continent = league_continent
+        player.league_type = league_type
 
     # ------------------------------------------------------------------ #
     #  Loan detection                                                     #

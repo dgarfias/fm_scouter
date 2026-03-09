@@ -9,17 +9,17 @@ from datetime import date, timedelta
 from typing import Optional
 
 from PyQt6.QtCore import (
-    Qt, QAbstractTableModel, QModelIndex, QRectF,
+    Qt, QAbstractTableModel, QModelIndex, QRectF, QEvent, QItemSelectionModel,
     QThread, QSettings, QTimer, pyqtSignal,
 )
-from PyQt6.QtGui import QColor, QFont, QPainter, QPen, QBrush, QFontMetrics
+from PyQt6.QtGui import QColor, QFont, QPainter, QPen, QBrush, QFontMetrics, QPalette
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QTableView, QHeaderView, QLineEdit, QComboBox,
     QPushButton, QLabel, QStatusBar, QMessageBox, QAbstractItemView,
     QDialog, QScrollArea, QFrame, QSpinBox, QGroupBox, QFormLayout, QMenu,
     QTabWidget, QDialogButtonBox, QCheckBox, QFileDialog, QProgressBar,
-    QStyledItemDelegate, QStyleOptionViewItem, QStyle,
+    QStyledItemDelegate, QStyleOptionViewItem, QStyle, QListView,
 )
 
 from fm_scout.process import find_fm_process, get_memory_regions
@@ -185,7 +185,7 @@ COL_INDEX = {name: idx for idx, name in enumerate(TABLE_COLS)}
 
 DEFAULT_HIDDEN_COLS = set(TABLE_COLS) - set(DEFAULT_VISIBLE_COLS)
 
-TABLE_LAYOUT_VERSION = 5
+TABLE_LAYOUT_VERSION = 6
 
 # Short header labels for table columns
 COL_HEADERS = {
@@ -312,7 +312,6 @@ QComboBox QAbstractItemView {
     background-color: #161b22;
     color: #c9d1d9;
     border: 1px solid #30363d;
-    selection-background-color: #1f6feb;
 }
 QTabWidget::pane {
     border: 1px solid #21262d;
@@ -503,9 +502,17 @@ def _ca_pa_color(val: int) -> QColor:
 def _player_age(player) -> int:
     if not player.birth_year or player.birth_year < 1900:
         return 0
-    age = GAME_YEAR - player.birth_year
-    if GAME_DAY and getattr(player, 'birth_day', 0):
-        if GAME_DAY < player.birth_day:
+    # Fallback to real-world date when in-game date scan is unavailable.
+    year = GAME_YEAR
+    day = GAME_DAY
+    if year <= 0 or day <= 0:
+        today = date.today()
+        year = today.year
+        day = today.timetuple().tm_yday
+
+    age = year - player.birth_year
+    if day and getattr(player, 'birth_day', 0):
+        if day < player.birth_day:
             age -= 1
     return max(0, age)
 
@@ -572,7 +579,7 @@ def _estimated_player_value(player) -> int:
 
 _COL_PLAYER_MAP = {
     'name': 'display_name',
-    'best_pos': 'best_position',
+    'best_pos': 'position_str',
     'ca': 'current_ability',
     'pa': 'potential_ability',
 }
@@ -618,15 +625,17 @@ class NameBadgeDelegate(QStyledItemDelegate):
         painter.save()
         painter.setClipRect(option.rect)
 
+        model = self._model_ref
         is_selected = bool(option.state & QStyle.StateFlag.State_Selected)
 
         if is_selected:
             painter.fillRect(option.rect, option.palette.highlight())
         else:
-            bg = option.palette.base().color()
+            if model is not None and model.is_hover_row(index.row()):
+                bg = QColor('#161b22')
+            else:
+                bg = option.palette.base().color()
             painter.fillRect(option.rect, bg)
-
-        model = self._model_ref
         player = None
         if model is not None:
             player = model.get_player(index.row())
@@ -697,12 +706,14 @@ class PlayerTableModel(QAbstractTableModel):
         self._view: list = []
         self._sort_col: int = -1
         self._sort_order: Qt.SortOrder = Qt.SortOrder.AscendingOrder
+        self._hover_row: int = -1
 
     def set_all_players(self, players: list):
         self.beginResetModel()
         self._all_players = list(players)
         self._view = list(players)
         self._sort_col = -1
+        self._hover_row = -1
         self.endResetModel()
 
     def filter(self, predicate=None):
@@ -713,7 +724,30 @@ class PlayerTableModel(QAbstractTableModel):
             self._view = [p for p in self._all_players if predicate(p)]
         if self._sort_col >= 0:
             self._do_sort()
+        self._hover_row = -1
         self.endResetModel()
+
+    def is_hover_row(self, row: int) -> bool:
+        return row == self._hover_row
+
+    def set_hover_row(self, row: int):
+        new_row = row if 0 <= row < len(self._view) else -1
+        if new_row == self._hover_row:
+            return
+        old_row = self._hover_row
+        self._hover_row = new_row
+        self._emit_hover_row_change(old_row)
+        self._emit_hover_row_change(new_row)
+
+    def clear_hover_row(self):
+        self.set_hover_row(-1)
+
+    def _emit_hover_row_change(self, row: int):
+        if row < 0 or row >= len(self._view):
+            return
+        left = self.index(row, 0)
+        right = self.index(row, len(TABLE_COLS) - 1)
+        self.dataChanged.emit(left, right, [Qt.ItemDataRole.BackgroundRole])
 
     def get_player(self, row: int):
         if 0 <= row < len(self._view):
@@ -780,6 +814,10 @@ class PlayerTableModel(QAbstractTableModel):
                         | Qt.AlignmentFlag.AlignVCenter)
             return (Qt.AlignmentFlag.AlignLeft
                     | Qt.AlignmentFlag.AlignVCenter)
+
+        if role == Qt.ItemDataRole.BackgroundRole:
+            if row == self._hover_row:
+                return QColor('#161b22')
 
         if role == Qt.ItemDataRole.ForegroundRole:
             if col_name in ('ca', 'pa'):
@@ -866,21 +904,36 @@ class ScanWorker(QThread):
             global GAME_YEAR, GAME_DAY
             GAME_YEAR = scanner.pointers.game_date_year
             GAME_DAY = scanner.pointers.game_date_day
+            if GAME_YEAR <= 0 or GAME_DAY <= 0:
+                today = date.today()
+                GAME_YEAR = today.year
+                GAME_DAY = today.timetuple().tm_yday
 
             self.progress.emit(50, 100, 'Reading players…')
-            player_reader = PlayerReader(reader, scanner)
-            players = player_reader.read_all()
+            player_reader = PlayerReader(reader, STRUCT_OFFSETS)
+            player_reader.PLAYER_VTABLES = set(scanner.player_vtables)
+            person_ptrs = scanner.get_person_pointers()
+            players = player_reader.read_all_players(person_ptrs)
 
             self.progress.emit(70, 100, 'Reading clubs…')
             club_reader = ClubReader(reader, scanner.pointers.dbt_root)
             clubs = club_reader.read_all_clubs()
+            my_club_name = (
+                scanner.pointers.human_club_name
+                or scanner.resolve_human_manager_club()
+                or ""
+            )
 
             self.progress.emit(85, 100, 'Enriching club data…')
             enrich_clubs_with_players(clubs, players, GAME_YEAR)
 
             reader.close()
             self.progress.emit(100, 100, 'Done!')
-            self.finished.emit({'players': players, 'clubs': clubs})
+            self.finished.emit({
+                'players': players,
+                'clubs': clubs,
+                'my_club': my_club_name,
+            })
 
         except Exception as e:
             logger.exception('Scan failed')
@@ -892,25 +945,24 @@ class ScanWorker(QThread):
 # ---------------------------------------------------------------------------
 
 _POS_COORDS = {
-    'GK':  (0.50, 0.92),
-    'SW':  (0.50, 0.83),
-    'DL':  (0.22, 0.78),
-    'DC':  (0.50, 0.78),
-    'DR':  (0.78, 0.78),
-    'WBL': (0.08, 0.68),
-    'WBR': (0.92, 0.68),
-    'DM':  (0.50, 0.62),
-    'ML':  (0.12, 0.48),
-    'MC':  (0.50, 0.48),
-    'MR':  (0.88, 0.48),
-    'AML': (0.22, 0.30),
-    'AMC': (0.50, 0.30),
-    'AMR': (0.78, 0.30),
-    'ST':  (0.50, 0.12),
+    'ST':  (0.50, 0.10),
+    'AML': (0.24, 0.26),
+    'AMC': (0.50, 0.26),
+    'AMR': (0.76, 0.26),
+    'ML':  (0.24, 0.42),
+    'MC':  (0.50, 0.42),
+    'MR':  (0.76, 0.42),
+    'WBL': (0.24, 0.58),
+    'DM':  (0.50, 0.58),
+    'WBR': (0.76, 0.58),
+    'DL':  (0.24, 0.74),
+    'DC':  (0.50, 0.74),
+    'DR':  (0.76, 0.74),
+    'GK':  (0.50, 0.90),
 }
 
-_POS_CYCLE = [0, 10, 15, 20]
-_DOT_RADIUS = 14
+_POS_CYCLE = [0, 5, 10, 15, 20]
+_DOT_RADIUS = 16
 
 
 class PositionFilterWidget(QWidget):
@@ -920,7 +972,7 @@ class PositionFilterWidget(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumSize(260, 320)
+        self.setMinimumSize(280, 380)
         self._values: dict[str, int] = {p: 0 for p in _POS_COORDS}
         self.setMouseTracking(True)
         self._hover_pos: Optional[str] = None
@@ -940,69 +992,83 @@ class PositionFilterWidget(QWidget):
         self.update()
         self.values_changed.emit()
 
+    @staticmethod
+    def _draw_pitch(painter: QPainter, w: int, h: int):
+        painter.fillRect(0, 0, w, h, QColor("#1e4d2b"))
+
+        line_pen = QPen(QColor(255, 255, 255, 110))
+        line_pen.setWidthF(1.5)
+        painter.setPen(line_pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+
+        m = 12
+        pw, ph = w - 2 * m, h - 2 * m
+        painter.drawRect(m, m, pw, ph)
+
+        mid_y = m + ph // 2
+        painter.drawLine(m, mid_y, m + pw, mid_y)
+
+        cr = min(pw, ph) * 0.07
+        painter.drawEllipse(QRectF(w / 2 - cr, mid_y - cr, cr * 2, cr * 2))
+
+        pa_w = int(pw * 0.52)
+        pa_h = int(ph * 0.14)
+        pa_x = m + (pw - pa_w) // 2
+        painter.drawRect(pa_x, m, pa_w, pa_h)
+        painter.drawRect(pa_x, m + ph - pa_h, pa_w, pa_h)
+
+        ga_w = int(pw * 0.24)
+        ga_h = int(ph * 0.05)
+        ga_x = m + (pw - ga_w) // 2
+        painter.drawRect(ga_x, m, ga_w, ga_h)
+        painter.drawRect(ga_x, m + ph - ga_h, ga_w, ga_h)
+
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         w = self.width()
         h = self.height()
 
-        painter.fillRect(0, 0, w, h, QColor(30, 70, 30))
+        PositionFilterWidget._draw_pitch(painter, w, h)
 
-        pen = QPen(QColor(255, 255, 255, 60))
-        pen.setWidth(1)
-        painter.setPen(pen)
-        m = 8
-        painter.drawRect(m, m, w - 2 * m, h - 2 * m)
-        painter.drawLine(m, h // 2, w - m, h // 2)
-        painter.drawEllipse(w // 2 - 25, h // 2 - 25, 50, 50)
-
-        # Penalty areas
-        pa_w, pa_h = int(w * 0.40), int(h * 0.12)
-        painter.drawRect((w - pa_w) // 2, m, pa_w, pa_h)
-        painter.drawRect((w - pa_w) // 2, h - m - pa_h, pa_w, pa_h)
-
-        label_font = QFont()
-        label_font.setPixelSize(9)
+        label_font = QFont("sans-serif", 0)
+        label_font.setPixelSize(max(9, _DOT_RADIUS - 4))
         label_font.setBold(True)
-        value_font = QFont()
-        value_font.setPixelSize(10)
-        value_font.setBold(True)
 
+        r = _DOT_RADIUS
         for pos_name, (fx, fy) in _POS_COORDS.items():
             cx = int(fx * w)
             cy = int(fy * h)
             val = self._values.get(pos_name, 0)
 
-            if val >= 20:
-                dot_color = QColor(56, 211, 100)
-            elif val >= 15:
-                dot_color = QColor(31, 111, 235)
-            elif val >= 10:
-                dot_color = QColor(210, 153, 34)
+            if val <= 1:
+                fill = QColor("#4b5563")
+            elif val <= 4:
+                fill = QColor("#dc2626")
+            elif val <= 9:
+                fill = QColor("#ea580c")
+            elif val <= 14:
+                fill = QColor("#eab308")
+            elif val <= 18:
+                fill = QColor("#16a34a")
             else:
-                dot_color = QColor(80, 80, 80)
+                fill = QColor("#4ade80")
 
             is_hover = (self._hover_pos == pos_name)
             if is_hover:
-                dot_color = dot_color.lighter(130)
+                fill = fill.lighter(135)
 
-            painter.setBrush(QBrush(dot_color))
-            painter.setPen(QPen(QColor(255, 255, 255, 180), 1))
-            painter.drawEllipse(cx - _DOT_RADIUS, cy - _DOT_RADIUS,
-                                _DOT_RADIUS * 2, _DOT_RADIUS * 2)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QBrush(fill))
+            painter.drawEllipse(cx - r, cy - r, r * 2, r * 2)
 
+            painter.setPen(QColor("#ffffff"))
             painter.setFont(label_font)
-            painter.setPen(QColor(255, 255, 255))
-            label_rect = QRectF(cx - 20, cy - _DOT_RADIUS - 14, 40, 13)
-            painter.drawText(label_rect, Qt.AlignmentFlag.AlignCenter,
-                             pos_name)
-
-            if val > 0:
-                painter.setFont(value_font)
-                painter.setPen(QColor(255, 255, 255))
-                val_rect = QRectF(cx - 12, cy - 6, 24, 14)
-                painter.drawText(val_rect, Qt.AlignmentFlag.AlignCenter,
-                                 str(val))
+            painter.drawText(
+                QRectF(cx - r, cy - r, r * 2, r * 2),
+                Qt.AlignmentFlag.AlignCenter,
+                pos_name,
+            )
 
         painter.end()
 
@@ -1044,6 +1110,59 @@ class PositionFilterWidget(QWidget):
         return None
 
 
+class _PlayerPositionPitch(QWidget):
+    """Read-only pitch diagram showing a player's position ratings."""
+
+    def __init__(self, positions: dict[str, int], parent=None):
+        super().__init__(parent)
+        self._positions = positions
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w = self.width()
+        h = self.height()
+
+        PositionFilterWidget._draw_pitch(painter, w, h)
+
+        label_font = QFont("sans-serif", 0)
+        label_font.setPixelSize(max(9, _DOT_RADIUS - 4))
+        label_font.setBold(True)
+
+        r = _DOT_RADIUS
+        for pos_name, (fx, fy) in _POS_COORDS.items():
+            cx = int(fx * w)
+            cy = int(fy * h)
+            val = self._positions.get(pos_name, 0)
+
+            if val <= 1:
+                fill = QColor("#4b5563")
+            elif val <= 4:
+                fill = QColor("#dc2626")
+            elif val <= 9:
+                fill = QColor("#ea580c")
+            elif val <= 14:
+                fill = QColor("#eab308")
+            elif val <= 18:
+                fill = QColor("#16a34a")
+            else:
+                fill = QColor("#4ade80")
+
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QBrush(fill))
+            painter.drawEllipse(cx - r, cy - r, r * 2, r * 2)
+
+            painter.setPen(QColor("#ffffff"))
+            painter.setFont(label_font)
+            painter.drawText(
+                QRectF(cx - r, cy - r, r * 2, r * 2),
+                Qt.AlignmentFlag.AlignCenter,
+                pos_name,
+            )
+
+        painter.end()
+
+
 # ---------------------------------------------------------------------------
 # SearchDialog
 # ---------------------------------------------------------------------------
@@ -1080,9 +1199,13 @@ class SearchDialog(QDialog):
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
             | QDialogButtonBox.StandardButton.Cancel
+            | QDialogButtonBox.StandardButton.Reset
         )
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
+        clear_btn = buttons.button(QDialogButtonBox.StandardButton.Reset)
+        clear_btn.setText('Clear All Filters')
+        clear_btn.clicked.connect(self._clear_all)
         layout.addWidget(buttons)
 
         self._restore_from_current()
@@ -1094,37 +1217,75 @@ class SearchDialog(QDialog):
         outer = QVBoxLayout(tab)
         outer.setContentsMargins(8, 8, 8, 8)
 
-        # Location hierarchy
-        loc_group = QGroupBox('Location')
+        name_row = QHBoxLayout()
+        name_label = QLabel('Name:')
+        name_label.setStyleSheet('color: #f0f6fc; font-size: 12px; font-weight: 600;')
+        self._name_edit = QLineEdit()
+        self._name_edit.setPlaceholderText('Search by player name...')
+        name_row.addWidget(name_label)
+        name_row.addWidget(self._name_edit, 1)
+        outer.addLayout(name_row)
+
+        top_row = QHBoxLayout()
+
+        # Nationality filter (player's own nationality)
+        nat_group = QGroupBox('Nationality')
+        nat_layout = QFormLayout(nat_group)
+        nat_layout.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+
+        self._nat_continent_combo = QComboBox()
+        self._configure_combo_popup(self._nat_continent_combo)
+        self._nat_continent_combo.addItem('Any')
+        for c in self._filter_data.get('nat_continents', []):
+            self._nat_continent_combo.addItem(c)
+        self._nat_continent_combo.currentTextChanged.connect(
+            self._on_nat_continent_changed)
+        nat_layout.addRow('Continent:', self._nat_continent_combo)
+
+        self._nat_nation_combo = QComboBox()
+        self._configure_combo_popup(self._nat_nation_combo)
+        self._nat_nation_combo.addItem('Any')
+        nat_layout.addRow('Nation:', self._nat_nation_combo)
+
+        top_row.addWidget(nat_group)
+
+        # Club location filter (league geography)
+        loc_group = QGroupBox('Club Location')
         loc_layout = QFormLayout(loc_group)
         loc_layout.setFieldGrowthPolicy(
             QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
 
         self._continent_combo = QComboBox()
+        self._configure_combo_popup(self._continent_combo)
         self._continent_combo.addItem('Any')
-        for c in sorted(self._filter_data.get('continents', [])):
+        for c in self._filter_data.get('club_continents', []):
             self._continent_combo.addItem(c)
         self._continent_combo.currentTextChanged.connect(
             self._on_continent_changed)
         loc_layout.addRow('Continent:', self._continent_combo)
 
         self._nation_combo = QComboBox()
+        self._configure_combo_popup(self._nation_combo)
         self._nation_combo.addItem('Any')
         self._nation_combo.currentTextChanged.connect(
             self._on_nation_changed)
         loc_layout.addRow('Nation:', self._nation_combo)
 
         self._league_combo = QComboBox()
+        self._configure_combo_popup(self._league_combo)
         self._league_combo.addItem('Any')
         self._league_combo.currentTextChanged.connect(
             self._on_league_changed)
         loc_layout.addRow('League:', self._league_combo)
 
         self._club_combo = QComboBox()
+        self._configure_combo_popup(self._club_combo)
         self._club_combo.addItem('Any')
         loc_layout.addRow('Club:', self._club_combo)
 
-        outer.addWidget(loc_group)
+        top_row.addWidget(loc_group)
+        outer.addLayout(top_row)
 
         # Position filter + ranges side by side
         mid_layout = QHBoxLayout()
@@ -1133,10 +1294,6 @@ class SearchDialog(QDialog):
         pos_inner = QVBoxLayout(pos_group)
         self._pos_widget = PositionFilterWidget()
         pos_inner.addWidget(self._pos_widget)
-        reset_btn = QPushButton('Reset')
-        reset_btn.setMaximumWidth(80)
-        reset_btn.clicked.connect(self._pos_widget.reset)
-        pos_inner.addWidget(reset_btn, alignment=Qt.AlignmentFlag.AlignCenter)
         mid_layout.addWidget(pos_group)
 
         range_group = QGroupBox('Ranges')
@@ -1170,13 +1327,23 @@ class SearchDialog(QDialog):
 
         self._tabs.addTab(tab, 'General')
 
+    def _on_nat_continent_changed(self, text: str):
+        self._nat_nation_combo.blockSignals(True)
+        self._nat_nation_combo.clear()
+        self._nat_nation_combo.addItem('Any')
+        if text and text != 'Any':
+            nations = self._filter_data.get('nat_nations', {}).get(text, [])
+            for n in nations:
+                self._nat_nation_combo.addItem(n)
+        self._nat_nation_combo.blockSignals(False)
+
     def _on_continent_changed(self, text: str):
         self._nation_combo.blockSignals(True)
         self._nation_combo.clear()
         self._nation_combo.addItem('Any')
         if text and text != 'Any':
-            nations = self._filter_data.get('nations', {}).get(text, [])
-            for n in sorted(nations):
+            nations = self._filter_data.get('club_nations', {}).get(text, [])
+            for n in nations:
                 self._nation_combo.addItem(n)
         self._nation_combo.blockSignals(False)
         self._on_nation_changed(self._nation_combo.currentText())
@@ -1217,6 +1384,7 @@ class SearchDialog(QDialog):
         grid.setContentsMargins(8, 8, 8, 8)
         grid.setHorizontalSpacing(12)
         grid.setVerticalSpacing(4)
+        grid.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         hdr_font = QFont()
         hdr_font.setBold(True)
@@ -1259,6 +1427,8 @@ class SearchDialog(QDialog):
 
         grid.setColumnStretch(3, 1)
         grid.setColumnStretch(7, 1)
+        # Keep attribute rows packed at the top; spare space goes below.
+        grid.setRowStretch(half + 2, 1)
 
         scroll.setWidget(content)
         tab_layout = QVBoxLayout(tab)
@@ -1277,18 +1447,75 @@ class SearchDialog(QDialog):
         s.setSpecialValueText('-')
         return s
 
+    @staticmethod
+    def _configure_combo_popup(combo: QComboBox):
+        """Ensure popup rows highlight on hover on all Qt styles."""
+        lv = QListView(combo)
+        lv.setMouseTracking(True)
+        combo.setView(lv)
+
+        pal = lv.palette()
+        pal.setColor(QPalette.ColorGroup.Active, QPalette.ColorRole.Highlight, QColor("#2b6cb0"))
+        pal.setColor(QPalette.ColorGroup.Active, QPalette.ColorRole.HighlightedText, QColor("#f0f6fc"))
+        pal.setColor(QPalette.ColorGroup.Inactive, QPalette.ColorRole.Highlight, QColor("#2b6cb0"))
+        pal.setColor(QPalette.ColorGroup.Inactive, QPalette.ColorRole.HighlightedText, QColor("#f0f6fc"))
+        pal.setColor(QPalette.ColorGroup.Active, QPalette.ColorRole.Base, QColor("#161b22"))
+        pal.setColor(QPalette.ColorGroup.Inactive, QPalette.ColorRole.Base, QColor("#161b22"))
+        pal.setColor(QPalette.ColorGroup.Active, QPalette.ColorRole.Text, QColor("#c9d1d9"))
+        pal.setColor(QPalette.ColorGroup.Inactive, QPalette.ColorRole.Text, QColor("#c9d1d9"))
+        lv.setPalette(pal)
+
+        def _select_on_hover(idx: QModelIndex):
+            lv.selectionModel().setCurrentIndex(
+                idx, QItemSelectionModel.SelectionFlag.ClearAndSelect)
+        lv._hover_cb = _select_on_hover
+        lv.entered.connect(lv._hover_cb)
+
+    # -- Clear all ---------------------------------------------------------
+
+    def _clear_all(self):
+        self._name_edit.clear()
+        self._nat_continent_combo.setCurrentIndex(0)
+        self._nat_nation_combo.setCurrentIndex(0)
+        self._continent_combo.setCurrentIndex(0)
+        self._nation_combo.setCurrentIndex(0)
+        self._league_combo.setCurrentIndex(0)
+        self._club_combo.setCurrentIndex(0)
+        self._pos_widget.reset()
+        self._age_min.setValue(self._age_min.minimum())
+        self._age_max.setValue(self._age_max.minimum())
+        self._ca_min.setValue(0)
+        self._ca_max.setValue(0)
+        self._pa_min.setValue(0)
+        self._pa_max.setValue(0)
+        self._rep_min.setValue(0)
+        self._rep_max.setValue(0)
+        for smin, smax in self._attr_spins.values():
+            smin.setValue(0)
+            smax.setValue(0)
+
     # -- Restore / collect -------------------------------------------------
 
     def _restore_from_current(self):
         c = self._current
         if not c:
             return
-        if c.get('continent'):
-            idx = self._continent_combo.findText(c['continent'])
+        if c.get('name'):
+            self._name_edit.setText(c['name'])
+        if c.get('nat_continent'):
+            idx = self._nat_continent_combo.findText(c['nat_continent'])
+            if idx >= 0:
+                self._nat_continent_combo.setCurrentIndex(idx)
+        if c.get('nationality'):
+            idx = self._nat_nation_combo.findText(c['nationality'])
+            if idx >= 0:
+                self._nat_nation_combo.setCurrentIndex(idx)
+        if c.get('club_continent'):
+            idx = self._continent_combo.findText(c['club_continent'])
             if idx >= 0:
                 self._continent_combo.setCurrentIndex(idx)
-        if c.get('nation'):
-            idx = self._nation_combo.findText(c['nation'])
+        if c.get('club_nation'):
+            idx = self._nation_combo.findText(c['club_nation'])
             if idx >= 0:
                 self._nation_combo.setCurrentIndex(idx)
         if c.get('league_display'):
@@ -1320,13 +1547,25 @@ class SearchDialog(QDialog):
     def get_filters(self) -> dict:
         f: dict = {}
 
+        name = self._name_edit.text().strip()
+        if name:
+            f['name'] = name
+
+        nat_cont = self._nat_continent_combo.currentText()
+        if nat_cont and nat_cont != 'Any':
+            f['nat_continent'] = nat_cont
+
+        nationality = self._nat_nation_combo.currentText()
+        if nationality and nationality != 'Any':
+            f['nationality'] = nationality
+
         continent = self._continent_combo.currentText()
         if continent and continent != 'Any':
-            f['continent'] = continent
+            f['club_continent'] = continent
 
         nation = self._nation_combo.currentText()
         if nation and nation != 'Any':
-            f['nation'] = nation
+            f['club_nation'] = nation
 
         league_text = self._league_combo.currentText()
         if league_text and league_text != 'Any':
@@ -1380,41 +1619,24 @@ class PlayerDetailDialog(QDialog):
     def __init__(self, player, parent=None):
         super().__init__(parent)
         self.setWindowTitle(getattr(player, 'display_name', '') or 'Player')
-        self.setMinimumSize(680, 620)
+        self.setMinimumSize(720, 660)
         self.setStyleSheet(SS_WIDGET + SS_DIALOG)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
 
         layout.addWidget(self._build_header(player))
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        content = QWidget()
-        content_layout = QVBoxLayout(content)
-        content_layout.setContentsMargins(0, 8, 0, 0)
-
-        content_layout.addWidget(self._build_stats_row(player))
+        layout.addWidget(self._build_stats_row(player))
 
         contract_w = self._build_contract_info(player)
         if contract_w:
-            content_layout.addWidget(contract_w)
+            layout.addWidget(contract_w)
 
-        content_layout.addWidget(self._section_label('Attributes'))
-        content_layout.addWidget(self._build_attribute_grid(player))
-
-        content_layout.addWidget(self._section_label('Positions'))
-        content_layout.addWidget(self._build_positions(player))
-
-        pers_w = self._build_personality(player)
-        if pers_w:
-            content_layout.addWidget(self._section_label('Personality'))
-            content_layout.addWidget(pers_w)
-
-        content_layout.addStretch()
-        scroll.setWidget(content)
-        layout.addWidget(scroll)
+        tabs = QTabWidget()
+        tabs.addTab(self._build_attributes_tab(player), 'Attributes')
+        tabs.addTab(self._build_positions_tab(player), 'Positions')
+        tabs.addTab(self._build_personality_tab(player), 'Personality')
+        layout.addWidget(tabs, 1)
 
     def _build_header(self, player) -> QWidget:
         w = QWidget()
@@ -1513,10 +1735,13 @@ class PlayerDetailDialog(QDialog):
             lay.addWidget(lbl)
         return w
 
-    def _build_attribute_grid(self, player) -> QWidget:
+    def _build_attributes_tab(self, player) -> QWidget:
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
         w = QWidget()
         master_lay = QHBoxLayout(w)
-        master_lay.setContentsMargins(0, 0, 0, 0)
+        master_lay.setContentsMargins(8, 8, 8, 8)
         master_lay.setSpacing(16)
 
         sections = [
@@ -1533,20 +1758,19 @@ class PlayerDetailDialog(QDialog):
 
             hdr = QLabel(section_name)
             hdr.setStyleSheet(
-                'color: #8b949e; font-size: 11px; font-weight: 600;')
+                'color: #58a6ff; font-size: 11px; font-weight: 700;')
             col_lay.addWidget(hdr)
 
             for field in fields:
                 val = getattr(player, field, 0) or 0
                 display = FULL_NAMES.get(field, field)
                 color = attr_color_hex(val) if val > 0 else '#484f58'
-                row = QWidget()
-                row_lay = QHBoxLayout(row)
+                row_w = QWidget()
+                row_lay = QHBoxLayout(row_w)
                 row_lay.setContentsMargins(0, 0, 0, 0)
                 row_lay.setSpacing(4)
                 name_lbl = QLabel(display)
-                name_lbl.setStyleSheet(
-                    'color: #c9d1d9; font-size: 11px;')
+                name_lbl.setStyleSheet('color: #c9d1d9; font-size: 11px;')
                 name_lbl.setMinimumWidth(100)
                 val_lbl = QLabel(str(val) if val else '-')
                 val_lbl.setStyleSheet(
@@ -1555,53 +1779,69 @@ class PlayerDetailDialog(QDialog):
                 val_lbl.setAlignment(Qt.AlignmentFlag.AlignRight)
                 row_lay.addWidget(name_lbl)
                 row_lay.addWidget(val_lbl)
-                col_lay.addWidget(row)
+                col_lay.addWidget(row_w)
 
             col_lay.addStretch()
             master_lay.addWidget(col_w)
 
         master_lay.addStretch()
-        return w
+        scroll.setWidget(w)
+        return scroll
 
-    def _build_positions(self, player) -> QWidget:
-        w = QWidget()
-        lay = QGridLayout(w)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(4)
+    def _build_positions_tab(self, player) -> QWidget:
+        tab = QWidget()
+        lay = QHBoxLayout(tab)
+        lay.setContentsMargins(8, 8, 8, 8)
+        lay.setSpacing(16)
 
         positions = getattr(player, 'positions', {}) or {}
-        col = 0
-        row = 0
-        for pos_name in POSITION_NAMES:
+
+        pitch = _PlayerPositionPitch(positions)
+        pitch.setMinimumSize(280, 380)
+        lay.addWidget(pitch, 1)
+
+        list_w = QWidget()
+        list_lay = QVBoxLayout(list_w)
+        list_lay.setContentsMargins(0, 0, 0, 0)
+        list_lay.setSpacing(2)
+
+        hdr = QLabel('Position Ratings')
+        hdr.setStyleSheet('color: #58a6ff; font-size: 12px; font-weight: 700;')
+        list_lay.addWidget(hdr)
+
+        for pos_name in _POS_COORDS:
             val = positions.get(pos_name, 0)
-            if val <= 0:
-                continue
-            color = attr_color_hex(val)
+            if val <= 1:
+                color = '#484f58'
+            elif val <= 4:
+                color = '#dc2626'
+            elif val <= 9:
+                color = '#ea580c'
+            elif val <= 14:
+                color = '#eab308'
+            elif val <= 18:
+                color = '#16a34a'
+            else:
+                color = '#4ade80'
             lbl = QLabel(
-                f"<span style='color:#8b949e;'>{pos_name}:</span> "
+                f"<span style='color:#c9d1d9;'>{pos_name}</span>"
+                f"&nbsp;&nbsp;"
                 f"<span style='color:{color}; font-weight:600;'>{val}</span>"
             )
             lbl.setStyleSheet('font-size: 12px;')
-            lay.addWidget(lbl, row, col)
-            col += 1
-            if col >= 5:
-                col = 0
-                row += 1
+            list_lay.addWidget(lbl)
 
-        return w
+        list_lay.addStretch()
+        lay.addWidget(list_w)
+        return tab
 
-    def _build_personality(self, player) -> QWidget | None:
-        has_any = False
-        for pc in PERSONALITY_COLS:
-            if getattr(player, pc, 0):
-                has_any = True
-                break
-        if not has_any:
-            return None
-
+    def _build_personality_tab(self, player) -> QWidget:
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
         w = QWidget()
         lay = QGridLayout(w)
-        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setContentsMargins(8, 8, 8, 8)
         lay.setSpacing(4)
 
         col = 0
@@ -1622,7 +1862,9 @@ class PlayerDetailDialog(QDialog):
                 col = 0
                 row += 1
 
-        return w
+        lay.setRowStretch(row + 1, 1)
+        scroll.setWidget(w)
+        return scroll
 
     @staticmethod
     def _section_label(text: str) -> QLabel:
@@ -1657,10 +1899,17 @@ class MainWindow(QMainWindow):
         self._filter_nations: dict[str, list[str]] = {}
         self._filter_leagues: dict[str, list[tuple[str, int]]] = {}
         self._filter_clubs: dict[str, list[str]] = {}
+        self._col_pcts: dict[str, float] = {}
+        self._resizing_cols = False
 
         self._build_ui()
         self._restore_column_layout()
         self._apply_column_visibility()
+
+        self._search_table.horizontalHeader().sectionResized.connect(
+            self._on_column_resized)
+
+        QTimer.singleShot(0, self._apply_col_widths)
 
     # -- UI construction ---------------------------------------------------
 
@@ -1758,15 +2007,21 @@ class MainWindow(QMainWindow):
         self._search_table.setModel(self._search_model)
         self._search_table.setStyleSheet(SS_TABLE)
         self._search_table.setSortingEnabled(True)
+        self._search_table.setMouseTracking(True)
+        self._search_table.viewport().setMouseTracking(True)
         self._search_table.setSelectionBehavior(
             QAbstractItemView.SelectionBehavior.SelectRows)
         self._search_table.setSelectionMode(
             QAbstractItemView.SelectionMode.ExtendedSelection)
         self._search_table.verticalHeader().setVisible(False)
-        self._search_table.horizontalHeader().setStretchLastSection(True)
+        self._search_table.horizontalHeader().setStretchLastSection(False)
         self._search_table.horizontalHeader().setSectionResizeMode(
             QHeaderView.ResizeMode.Interactive)
         self._search_table.doubleClicked.connect(self._on_search_double_click)
+        self._search_table.entered.connect(
+            lambda idx: self._search_model.set_hover_row(idx.row())
+        )
+        self._search_table.viewport().installEventFilter(self)
 
         self._name_delegate = NameBadgeDelegate(
             self._search_table, self._search_model)
@@ -1814,16 +2069,22 @@ class MainWindow(QMainWindow):
         self._shortlist_table.setModel(self._shortlist_model)
         self._shortlist_table.setStyleSheet(SS_TABLE)
         self._shortlist_table.setSortingEnabled(True)
+        self._shortlist_table.setMouseTracking(True)
+        self._shortlist_table.viewport().setMouseTracking(True)
         self._shortlist_table.setSelectionBehavior(
             QAbstractItemView.SelectionBehavior.SelectRows)
         self._shortlist_table.setSelectionMode(
             QAbstractItemView.SelectionMode.ExtendedSelection)
         self._shortlist_table.verticalHeader().setVisible(False)
-        self._shortlist_table.horizontalHeader().setStretchLastSection(True)
+        self._shortlist_table.horizontalHeader().setStretchLastSection(False)
         self._shortlist_table.horizontalHeader().setSectionResizeMode(
             QHeaderView.ResizeMode.Interactive)
         self._shortlist_table.doubleClicked.connect(
             self._on_shortlist_double_click)
+        self._shortlist_table.entered.connect(
+            lambda idx: self._shortlist_model.set_hover_row(idx.row())
+        )
+        self._shortlist_table.viewport().installEventFilter(self)
 
         self._sl_name_delegate = NameBadgeDelegate(
             self._shortlist_table, self._shortlist_model)
@@ -1845,8 +2106,7 @@ class MainWindow(QMainWindow):
 
         self._scan_btn.setEnabled(False)
         self._refresh_btn.setEnabled(False)
-        self._progress_bar.setVisible(True)
-        self._progress_bar.setValue(0)
+        self._progress_bar.setVisible(False)
         self._status_bar.showMessage('Scanning…')
 
         self._scan_worker = ScanWorker()
@@ -1856,13 +2116,13 @@ class MainWindow(QMainWindow):
         self._scan_worker.start()
 
     def _on_scan_progress(self, current: int, total: int, msg: str):
-        self._progress_bar.setMaximum(total)
-        self._progress_bar.setValue(current)
-        self._status_bar.showMessage(msg)
+        # Progress updates intentionally hidden for a cleaner scan UX.
+        return
 
     def _on_scan_done(self, result: dict):
         players = result.get('players', [])
         clubs = result.get('clubs', [])
+        my_club = result.get('my_club', '')
 
         self._all_players = players
         self._all_clubs = clubs
@@ -1874,17 +2134,9 @@ class MainWindow(QMainWindow):
         self._rebuild_shortlist_model()
         self._rebuild_filter_options()
 
-        my_club = None
-        if clubs:
-            top_clubs = sorted(clubs, key=lambda c: c.reputation,
-                               reverse=True)
-            if top_clubs:
-                my_club = top_clubs[0]
-
         if hasattr(self._tactics_widget, 'set_data'):
             try:
-                self._tactics_widget.set_data(
-                    my_club=my_club, players=players)
+                self._tactics_widget.set_data(my_club=my_club, players=players)
             except Exception:
                 logger.debug('Tactics widget set_data not available yet')
 
@@ -1986,35 +2238,74 @@ class MainWindow(QMainWindow):
         self._apply_column_visibility()
         self._save_column_layout()
 
+    _DEFAULT_COL_PCTS: dict[str, float] = {
+        'name': 15.0, 'club': 15.0, 'nationality': 10.0,
+        'age': 4.0, 'best_pos': 8.0, 'est_value': 7.0,
+        'wage': 6.0, 'ca': 4.0, 'pa': 4.0, 'reputation': 5.0,
+    }
+    _DEFAULT_ATTR_PCT = 3.5
+
+    def _get_col_pcts(self) -> dict[str, float]:
+        """Return current percentage for each visible column."""
+        visible = [c for c in TABLE_COLS if c not in self._hidden_cols]
+        if not visible:
+            return {}
+        pcts: dict[str, float] = {}
+        for c in visible:
+            if c in self._col_pcts:
+                pcts[c] = self._col_pcts[c]
+            elif c in self._DEFAULT_COL_PCTS:
+                pcts[c] = self._DEFAULT_COL_PCTS[c]
+            else:
+                pcts[c] = self._DEFAULT_ATTR_PCT
+        total = sum(pcts.values())
+        if total > 0:
+            for c in pcts:
+                pcts[c] = pcts[c] / total * 100.0
+        return pcts
+
+    def _apply_col_widths(self):
+        """Distribute column widths proportionally across the table width."""
+        if self._resizing_cols:
+            return
+        self._resizing_cols = True
+        pcts = self._get_col_pcts()
+        for table in (self._search_table, self._shortlist_table):
+            tw = table.viewport().width()
+            if tw <= 1:
+                tw = table.width() - 2
+            for col_name, pct in pcts.items():
+                idx = COL_INDEX.get(col_name, -1)
+                if idx >= 0:
+                    table.setColumnWidth(idx, max(28, int(tw * pct / 100.0)))
+        self._resizing_cols = False
+
     def _apply_column_visibility(self):
         for i, col_name in enumerate(TABLE_COLS):
             hidden = col_name in self._hidden_cols
             self._search_table.setColumnHidden(i, hidden)
             self._shortlist_table.setColumnHidden(i, hidden)
+        self._apply_col_widths()
 
-        name_idx = COL_INDEX.get('name', 0)
-        self._search_table.setColumnWidth(name_idx, 200)
-        self._shortlist_table.setColumnWidth(name_idx, 200)
-
-        club_idx = COL_INDEX.get('club', -1)
-        if club_idx >= 0:
-            self._search_table.setColumnWidth(club_idx, 140)
-            self._shortlist_table.setColumnWidth(club_idx, 140)
-
-        nat_idx = COL_INDEX.get('nationality', -1)
-        if nat_idx >= 0:
-            self._search_table.setColumnWidth(nat_idx, 100)
-            self._shortlist_table.setColumnWidth(nat_idx, 100)
-
-        for i, col_name in enumerate(TABLE_COLS):
-            if col_name in ATTR_COLUMNS or col_name in PERSONALITY_COLS:
-                self._search_table.setColumnWidth(i, 38)
-                self._shortlist_table.setColumnWidth(i, 38)
+    def _on_column_resized(self, idx: int, old_w: int, new_w: int):
+        """When user drags a column, recalculate percentages from actual widths."""
+        if self._resizing_cols:
+            return
+        table = self._search_table
+        tw = table.viewport().width()
+        if tw <= 1:
+            return
+        visible = [c for c in TABLE_COLS if c not in self._hidden_cols]
+        for c in visible:
+            ci = COL_INDEX.get(c, -1)
+            if ci >= 0:
+                self._col_pcts[c] = table.columnWidth(ci) / tw * 100.0
 
     def _save_column_layout(self):
         settings = QSettings('FMScout', 'FMScout')
         settings.setValue('table_layout_version', TABLE_LAYOUT_VERSION)
         settings.setValue('hidden_columns', list(self._hidden_cols))
+        settings.setValue('column_pcts', dict(self._col_pcts))
 
     def _restore_column_layout(self):
         settings = QSettings('FMScout', 'FMScout')
@@ -2024,45 +2315,67 @@ class MainWindow(QMainWindow):
         hidden = settings.value('hidden_columns', None)
         if hidden is not None:
             self._hidden_cols = set(hidden)
+        saved_pcts = settings.value('column_pcts', None)
+        if saved_pcts and isinstance(saved_pcts, dict):
+            self._col_pcts = {k: float(v) for k, v in saved_pcts.items()}
 
     # -- Filter system -----------------------------------------------------
 
+    _SENIOR_LEAGUE_TYPES = {0, 1, 14}
+
     def _rebuild_filter_options(self):
-        continents: set[str] = set()
-        nations_by_continent: dict[str, set[str]] = {}
+        nat_continents: set[str] = set()
+        nat_by_continent: dict[str, set[str]] = {}
+
+        club_continents: set[str] = set()
+        club_nations_by_continent: dict[str, set[str]] = {}
         leagues_by_nation: dict[str, dict[str, int]] = {}
         clubs_by_league: dict[str, set[str]] = {}
 
         for p in self._all_players:
-            continent = getattr(p, 'league_continent', '') or ''
-            nation = getattr(p, 'nationality', '') or ''
+            nationality = getattr(p, 'nationality', '') or ''
+            nat_continent = getattr(p, 'continent', '') or ''
+            league_continent = getattr(p, 'league_continent', '') or ''
+            league_nation = getattr(p, 'league_nation', '') or ''
             league = getattr(p, 'league', '') or ''
             club = getattr(p, 'club', '') or ''
             rep = getattr(p, 'reputation', 0) or 0
 
-            if continent:
-                continents.add(continent)
-                if continent not in nations_by_continent:
-                    nations_by_continent[continent] = set()
-                if nation:
-                    nations_by_continent[continent].add(nation)
+            league_type = getattr(p, 'league_type', -1)
+            if league_type not in self._SENIOR_LEAGUE_TYPES:
+                continue
 
-            if nation and league:
-                if nation not in leagues_by_nation:
-                    leagues_by_nation[nation] = {}
-                if league not in leagues_by_nation[nation]:
-                    leagues_by_nation[nation][league] = 0
-                if rep > leagues_by_nation[nation][league]:
-                    leagues_by_nation[nation][league] = rep
+            if nationality:
+                if nat_continent:
+                    nat_continents.add(nat_continent)
+                    nat_by_continent.setdefault(nat_continent, set()).add(nationality)
+                elif league_continent:
+                    nat_continents.add(league_continent)
+                    nat_by_continent.setdefault(league_continent, set()).add(nationality)
+
+            if league_continent:
+                club_continents.add(league_continent)
+                if league_nation:
+                    club_nations_by_continent.setdefault(league_continent, set()).add(league_nation)
+
+            if league_nation and league:
+                leagues_by_nation.setdefault(league_nation, {})
+                if league not in leagues_by_nation[league_nation]:
+                    leagues_by_nation[league_nation][league] = 0
+                if rep > leagues_by_nation[league_nation][league]:
+                    leagues_by_nation[league_nation][league] = rep
 
             if league and club:
-                if league not in clubs_by_league:
-                    clubs_by_league[league] = set()
-                clubs_by_league[league].add(club)
+                clubs_by_league.setdefault(league, set()).add(club)
 
-        self._filter_continents = sorted(continents)
-        self._filter_nations = {
-            k: sorted(v) for k, v in nations_by_continent.items()
+        self._filter_nat_continents = sorted(nat_continents)
+        self._filter_nat_nations = {
+            k: sorted(v) for k, v in nat_by_continent.items()
+        }
+
+        self._filter_club_continents = sorted(club_continents)
+        self._filter_club_nations = {
+            k: sorted(v) for k, v in club_nations_by_continent.items()
         }
 
         self._filter_leagues = {}
@@ -2077,8 +2390,10 @@ class MainWindow(QMainWindow):
 
     def _open_search_dialog(self):
         filter_data = {
-            'continents': self._filter_continents,
-            'nations': self._filter_nations,
+            'nat_continents': self._filter_nat_continents,
+            'nat_nations': self._filter_nat_nations,
+            'club_continents': self._filter_club_continents,
+            'club_nations': self._filter_club_nations,
             'leagues': self._filter_leagues,
             'clubs': self._filter_clubs,
         }
@@ -2094,14 +2409,26 @@ class MainWindow(QMainWindow):
             self._filter_label.setText('')
             return
 
+        name_query = f.get('name', '').lower()
+
         def predicate(player) -> bool:
-            if f.get('continent'):
-                pc = getattr(player, 'league_continent', '') or ''
-                if pc != f['continent']:
+            if name_query:
+                pname = (getattr(player, 'name', '') or '').lower()
+                if name_query not in pname:
                     return False
 
-            if f.get('nation'):
-                if (getattr(player, 'nationality', '') or '') != f['nation']:
+            if f.get('nationality'):
+                if (getattr(player, 'nationality', '') or '') != f['nationality']:
+                    return False
+
+            if f.get('club_continent'):
+                pc = getattr(player, 'league_continent', '') or ''
+                if pc != f['club_continent']:
+                    return False
+
+            if f.get('club_nation'):
+                ln = getattr(player, 'league_nation', '') or ''
+                if ln != f['club_nation']:
                     return False
 
             if f.get('league'):
@@ -2158,10 +2485,12 @@ class MainWindow(QMainWindow):
         self._search_model.filter(predicate)
 
         parts = []
-        if f.get('continent'):
-            parts.append(f['continent'])
-        if f.get('nation'):
-            parts.append(f['nation'])
+        if f.get('nationality'):
+            parts.append(f['nationality'])
+        if f.get('club_continent'):
+            parts.append(f['club_continent'])
+        if f.get('club_nation'):
+            parts.append(f['club_nation'])
         if f.get('league'):
             parts.append(f['league'])
         if f.get('club'):
@@ -2334,7 +2663,19 @@ class MainWindow(QMainWindow):
             dlg = PlayerDetailDialog(player, parent=self)
             dlg.exec()
 
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.Leave:
+            if obj is self._search_table.viewport():
+                self._search_model.clear_hover_row()
+            elif obj is self._shortlist_table.viewport():
+                self._shortlist_model.clear_hover_row()
+        return super().eventFilter(obj, event)
+
     # -- Close event -------------------------------------------------------
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._apply_col_widths()
 
     def closeEvent(self, event):
         self._save_column_layout()

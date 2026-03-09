@@ -46,9 +46,11 @@ class MemoryReader:
             self._fd = -1
 
     def read_bytes(self, address: int, size: int) -> bytes | None:
+        if address < 0 or address > 0x7FFFFFFFFFFF:
+            return None
         try:
             return os.pread(self._fd, size, address)
-        except OSError:
+        except (OSError, OverflowError):
             return None
 
     def read_pointer(self, address: int) -> int | None:

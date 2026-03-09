@@ -5,12 +5,12 @@ from __future__ import annotations
 from collections import Counter
 from typing import Any
 
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QPainter, QPen, QBrush
+from PyQt6.QtCore import Qt, QRectF, pyqtSignal, QSettings, QItemSelectionModel
+from PyQt6.QtGui import QColor, QFont, QPainter, QPen, QBrush, QPalette
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QComboBox, QScrollArea, QFrame, QGroupBox, QGridLayout,
-    QSplitter, QTabWidget,
+    QSplitter, QTabWidget, QSizePolicy, QAbstractItemView, QListView,
 )
 
 from fm_scout.tactics_engine import (
@@ -44,7 +44,6 @@ QComboBox QAbstractItemView {
     background-color: #161b22;
     color: #c9d1d9;
     border: 1px solid #30363d;
-    selection-background-color: #1f6feb33;
 }
 QPushButton {
     background-color: #238636;
@@ -212,11 +211,14 @@ def _compute_slot_positions(positions: list[str]) -> list[tuple[float, float]]:
 
 
 class TacticsPitchWidget(QWidget):
-    """Custom-painted football pitch (340x460) showing formation slots."""
+    """Custom-painted football pitch showing formation slots."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(340, 460)
+        self.setMinimumSize(360, 500)
+        self.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
         self._slots: list[dict[str, Any]] = []
 
     def set_slots(self, slots_data: list[dict[str, Any]]):
@@ -228,10 +230,12 @@ class TacticsPitchWidget(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         w, h = self.width(), self.height()
 
-        p.fillRect(0, 0, w, h, QColor("#1a472a"))
+        p.fillRect(0, 0, w, h, QColor("#1e4d2b"))
 
-        pen = QPen(QColor("#ffffff"), 1.5)
-        p.setPen(pen)
+        line_pen = QPen(QColor(255, 255, 255, 180))
+        line_pen.setWidthF(1.5)
+        p.setPen(line_pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
 
         m = 16
         pw, ph = w - 2 * m, h - 2 * m
@@ -241,22 +245,27 @@ class TacticsPitchWidget(QWidget):
         mid_y = m + ph // 2
         p.drawLine(m, mid_y, m + pw, mid_y)
 
-        cr = 40
-        p.drawEllipse(m + pw // 2 - cr, mid_y - cr, cr * 2, cr * 2)
+        cr = min(pw, ph) * 0.07
+        p.drawEllipse(QRectF(w / 2 - cr, mid_y - cr, cr * 2, cr * 2))
 
-        pa_w, pa_h = int(pw * 0.55), int(ph * 0.15)
+        pa_w = int(pw * 0.52)
+        pa_h = int(ph * 0.14)
         pa_x = m + (pw - pa_w) // 2
         p.drawRect(pa_x, m, pa_w, pa_h)
         p.drawRect(pa_x, m + ph - pa_h, pa_w, pa_h)
 
-        ga_w, ga_h = int(pw * 0.30), int(ph * 0.06)
+        ga_w = int(pw * 0.24)
+        ga_h = int(ph * 0.05)
         ga_x = m + (pw - ga_w) // 2
         p.drawRect(ga_x, m, ga_w, ga_h)
         p.drawRect(ga_x, m + ph - ga_h, ga_w, ga_h)
 
-        circle_r = 24
-        font_role = QFont("sans-serif", 8, QFont.Weight.Bold)
-        font_name = QFont("sans-serif", 7)
+        circle_r = 22
+        font_role = QFont("sans-serif", 0)
+        font_role.setPixelSize(max(9, circle_r - 8))
+        font_role.setBold(True)
+        font_name = QFont("sans-serif", 0)
+        font_name.setPixelSize(max(8, circle_r - 10))
 
         for slot in self._slots:
             sx = int(slot["x"] / 100.0 * w)
@@ -264,23 +273,27 @@ class TacticsPitchWidget(QWidget):
             score = slot.get("score", 0)
             color = _score_color(score)
 
-            p.setPen(QPen(color, 2))
-            p.setBrush(QBrush(QColor(color.red(), color.green(), color.blue(), 50)))
+            p.setPen(QPen(color, 2.5))
+            p.setBrush(QBrush(QColor(color.red(), color.green(), color.blue(), 60)))
             p.drawEllipse(sx - circle_r, sy - circle_r, circle_r * 2, circle_r * 2)
 
             p.setFont(font_role)
             p.setPen(QColor("#f0f6fc"))
             p.drawText(
-                sx - circle_r, sy - 8, circle_r * 2, 16,
-                Qt.AlignmentFlag.AlignCenter, slot.get("role_short", ""),
+                QRectF(sx - circle_r, sy - circle_r, circle_r * 2, circle_r),
+                Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignBottom,
+                slot.get("role_short", ""),
             )
 
-            p.setFont(font_name)
-            p.setPen(QColor("#c9d1d9"))
-            p.drawText(
-                sx - circle_r - 4, sy + 6, circle_r * 2 + 8, 14,
-                Qt.AlignmentFlag.AlignCenter, slot.get("player_name", ""),
-            )
+            name = slot.get("player_name", "")
+            if name:
+                p.setFont(font_name)
+                p.setPen(QColor("#c9d1d9"))
+                p.drawText(
+                    QRectF(sx - circle_r - 6, sy + circle_r + 1, circle_r * 2 + 12, 14),
+                    Qt.AlignmentFlag.AlignCenter,
+                    name,
+                )
 
         p.end()
 
@@ -302,6 +315,10 @@ class TacticsBuilderWidget(QWidget):
         self._hierarchy: dict[str, dict[str, dict[str, list[str]]]] = {}
         self._club_counts: dict[str, int] = {}
         self._my_club_name: str = ""
+        self._settings = QSettings("FMScout", "FMScout")
+        saved_club = self._settings.value("tactics/my_club_name", "", type=str)
+        if saved_club:
+            self._my_club_name = saved_club
 
         self._analysis: SquadAnalysis | None = None
         self._current_eval: dict[str, Any] | None = None
@@ -316,21 +333,25 @@ class TacticsBuilderWidget(QWidget):
         toolbar.setSpacing(6)
 
         self._cb_continent = QComboBox()
+        self._configure_combo_popup(self._cb_continent)
         self._cb_continent.addItem("Continent")
         self._cb_continent.currentTextChanged.connect(self._on_continent_changed)
         toolbar.addWidget(self._cb_continent)
 
         self._cb_nation = QComboBox()
+        self._configure_combo_popup(self._cb_nation)
         self._cb_nation.addItem("Nation")
         self._cb_nation.currentTextChanged.connect(self._on_nation_changed)
         toolbar.addWidget(self._cb_nation)
 
         self._cb_league = QComboBox()
+        self._configure_combo_popup(self._cb_league)
         self._cb_league.addItem("League")
         self._cb_league.currentTextChanged.connect(self._on_league_changed)
         toolbar.addWidget(self._cb_league)
 
         self._cb_club = QComboBox()
+        self._configure_combo_popup(self._cb_club)
         self._cb_club.addItem("Club")
         toolbar.addWidget(self._cb_club)
 
@@ -353,6 +374,10 @@ class TacticsBuilderWidget(QWidget):
 
         # ---- main splitter ----
         splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.setChildrenCollapsible(False)
+        splitter.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
 
         # left panel — formation + pitch
         left = QWidget()
@@ -365,6 +390,7 @@ class TacticsBuilderWidget(QWidget):
         fmt_row.addWidget(fmt_lbl)
 
         self._cb_formation = QComboBox()
+        self._configure_combo_popup(self._cb_formation)
         for fid, fdata in FORMATIONS.items():
             self._cb_formation.addItem(fdata.get("name", fid), fid)
         self._cb_formation.currentIndexChanged.connect(self._on_formation_changed)
@@ -373,7 +399,7 @@ class TacticsBuilderWidget(QWidget):
         left_ly.addLayout(fmt_row)
 
         self._pitch = TacticsPitchWidget()
-        left_ly.addWidget(self._pitch, alignment=Qt.AlignmentFlag.AlignCenter)
+        left_ly.addWidget(self._pitch, 1)
 
         self._lbl_score = QLabel("")
         self._lbl_score.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -381,7 +407,6 @@ class TacticsBuilderWidget(QWidget):
             "color: #c9d1d9; font-size: 13px; font-weight: 600; padding: 4px;"
         )
         left_ly.addWidget(self._lbl_score)
-        left_ly.addStretch()
         splitter.addWidget(left)
 
         # right panel — tabs
@@ -392,8 +417,10 @@ class TacticsBuilderWidget(QWidget):
         self._rec_scroll, self._rec_layout = self._make_tab("Recommendations")
 
         splitter.addWidget(self._tabs)
-        splitter.setSizes([400, 600])
-        root.addWidget(splitter)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 2)
+        splitter.setSizes([520, 900])
+        root.addWidget(splitter, 1)
 
     # -- tab factory -------------------------------------------------------
 
@@ -409,7 +436,46 @@ class TacticsBuilderWidget(QWidget):
         self._tabs.addTab(scroll, title)
         return scroll, ly
 
+    @staticmethod
+    def _configure_combo_popup(combo: QComboBox):
+        lv = QListView(combo)
+        lv.setMouseTracking(True)
+        combo.setView(lv)
+
+        pal = lv.palette()
+        pal.setColor(QPalette.ColorGroup.Active, QPalette.ColorRole.Highlight, QColor("#2b6cb0"))
+        pal.setColor(QPalette.ColorGroup.Active, QPalette.ColorRole.HighlightedText, QColor("#f0f6fc"))
+        pal.setColor(QPalette.ColorGroup.Inactive, QPalette.ColorRole.Highlight, QColor("#2b6cb0"))
+        pal.setColor(QPalette.ColorGroup.Inactive, QPalette.ColorRole.HighlightedText, QColor("#f0f6fc"))
+        pal.setColor(QPalette.ColorGroup.Active, QPalette.ColorRole.Base, QColor("#161b22"))
+        pal.setColor(QPalette.ColorGroup.Inactive, QPalette.ColorRole.Base, QColor("#161b22"))
+        pal.setColor(QPalette.ColorGroup.Active, QPalette.ColorRole.Text, QColor("#c9d1d9"))
+        pal.setColor(QPalette.ColorGroup.Inactive, QPalette.ColorRole.Text, QColor("#c9d1d9"))
+        lv.setPalette(pal)
+
+        def _select_on_hover(idx):
+            lv.selectionModel().setCurrentIndex(
+                idx, QItemSelectionModel.SelectionFlag.ClearAndSelect)
+        lv._hover_cb = _select_on_hover
+        lv.entered.connect(lv._hover_cb)
+
     # -- public API --------------------------------------------------------
+
+    def set_data(self, my_club=None, players: list[Any] | None = None):
+        """Compatibility API used by main window scan flow."""
+        players_list = players or []
+        club_name = ""
+        if isinstance(my_club, str):
+            club_name = my_club
+        elif my_club is not None:
+            club_name = (
+                getattr(my_club, "name", "")
+                or getattr(my_club, "display_name", "")
+                or ""
+            )
+        self.set_players(players_list, club_name)
+        if club_name:
+            self._on_my_club()
 
     def set_players(self, players: list[Any], my_club: str = ""):
         self._players = players
@@ -423,7 +489,7 @@ class TacticsBuilderWidget(QWidget):
             if not getattr(p, "club", "") or getattr(p, "current_ability", 0) <= 0:
                 continue
             continent = getattr(p, "league_continent", "") or "Unknown"
-            nation = getattr(p, "nationality", "") or "Unknown"
+            nation = getattr(p, "league_nation", "") or "Unknown"
             league = getattr(p, "league", "") or "Unknown"
             club = p.club
 
@@ -479,9 +545,16 @@ class TacticsBuilderWidget(QWidget):
                 for league, clubs in leagues.items():
                     if club_name in clubs:
                         self._cb_continent.setCurrentText(continent)
+                        self._on_continent_changed(continent)
                         self._cb_nation.setCurrentText(nation)
+                        self._on_nation_changed(nation)
                         self._cb_league.setCurrentText(league)
-                        self._cb_club.setCurrentText(club_name)
+                        self._on_league_changed(league)
+                        idx = self._cb_club.findData(club_name)
+                        if idx >= 0:
+                            self._cb_club.setCurrentIndex(idx)
+                        else:
+                            self._cb_club.setCurrentText(club_name)
                         return
 
     def _on_continent_changed(self, text: str):
@@ -529,6 +602,8 @@ class TacticsBuilderWidget(QWidget):
         club_name = club_data if club_data else self._cb_club.currentText()
         if not club_name or club_name == "Club":
             return
+        self._my_club_name = club_name
+        self._settings.setValue("tactics/my_club_name", club_name)
 
         self._club_players = [
             p for p in self._players
@@ -601,67 +676,129 @@ class TacticsBuilderWidget(QWidget):
 
     def _update_best_xi(self, ev: dict[str, Any]):
         _clear_layout(self._best_xi_layout)
-        _section(self._best_xi_layout, "Formation Slots")
 
-        for sr in ev.get("slots", []):
-            card = QFrame()
-            card.setStyleSheet(
-                "QFrame { background-color: #161b22; border: 1px solid #21262d; "
-                "border-radius: 4px; padding: 8px; margin: 2px 0; }"
-            )
-            cly = QVBoxLayout(card)
-            cly.setContentsMargins(8, 6, 8, 6)
-            cly.setSpacing(2)
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setSpacing(0)
+
+        hdr_style = (
+            "color: #8b949e; font-size: 10px; font-weight: 700; "
+            "padding: 4px 6px; border-bottom: 1px solid #30363d;"
+        )
+        for ci, label in enumerate(["POS", "ROLE / DUTY", "SCORE", "PLAYER", "POSITION", "ALT"]):
+            h = QLabel(label)
+            h.setStyleSheet(hdr_style)
+            grid.addWidget(h, 0, ci)
+
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 3)
+        grid.setColumnStretch(2, 1)
+        grid.setColumnStretch(3, 4)
+        grid.setColumnStretch(4, 3)
+        grid.setColumnStretch(5, 3)
+
+        row_even = (
+            "background-color: #161b22; padding: 4px 6px;"
+            "border-bottom: 1px solid #1b2028;"
+        )
+        row_odd = (
+            "background-color: #0d1117; padding: 4px 6px;"
+            "border-bottom: 1px solid #1b2028;"
+        )
+
+        for ri, sr in enumerate(ev.get("slots", []), start=1):
+            row_style = row_even if ri % 2 == 0 else row_odd
 
             pos = sr.get("position", "")
             role_id = sr.get("role_id", "")
             duty = sr.get("duty", "")
-            role_name = ROLE_DEFINITIONS.get(role_id, {}).get("name", role_id)
-
-            header = QLabel(f"{pos} \u2014 {role_name} ({duty.title()})")
-            header.setStyleSheet(
-                "color: #f0f6fc; font-size: 12px; font-weight: 600;"
-            )
-            cly.addWidget(header)
-
+            role_def = ROLE_DEFINITIONS.get(role_id, {})
+            role_short = role_def.get("short", role_id[:3].upper())
+            role_name = role_def.get("name", role_id)
+            cur = sr.get("current_score", 0)
+            pot = sr.get("potential_score", 0)
             player = sr.get("player")
+            score_clr = _score_color_hex(cur)
+
+            pos_lbl = QLabel(pos)
+            pos_lbl.setStyleSheet(
+                f"{row_style} color: #c9d1d9; font-size: 11px; font-weight: 600;"
+            )
+            grid.addWidget(pos_lbl, ri, 0)
+
+            role_w = QWidget()
+            role_w.setStyleSheet(row_style)
+            role_ly = QVBoxLayout(role_w)
+            role_ly.setContentsMargins(4, 2, 4, 2)
+            role_ly.setSpacing(0)
+            role_name_lbl = QLabel(role_short)
+            role_name_lbl.setStyleSheet(
+                f"color: #f0f6fc; font-size: 11px; font-weight: 700;"
+                f"background-color: {score_clr}; border-radius: 2px;"
+                f"padding: 1px 4px;"
+            )
+            role_ly.addWidget(role_name_lbl)
+            duty_lbl = QLabel(duty.title())
+            duty_lbl.setStyleSheet("color: #8b949e; font-size: 9px;")
+            role_ly.addWidget(duty_lbl)
+            grid.addWidget(role_w, ri, 1)
+
+            score_lbl = QLabel(
+                f"<span style='color:{score_clr}; font-weight:600;'>{cur:.0f}</span>"
+                f"<span style='color:#484f58;'> / {pot:.0f}</span>"
+            )
+            score_lbl.setStyleSheet(f"{row_style} font-size: 11px;")
+            grid.addWidget(score_lbl, ri, 2)
+
             if player:
-                cur = sr.get("current_score", 0)
-                pot = sr.get("potential_score", 0)
-                name = (
+                pname = (
                     getattr(player, "display_name", "")
                     or getattr(player, "name", "")
                 )
-                parts = [
-                    f"<span style='color:#c9d1d9'>{name}</span>",
-                    f"<span style='color:{_score_color_hex(cur)}'>{cur:.0f}</span>",
-                    f"<span style='color:#8b949e'>/ {pot:.0f} pot</span>",
-                ]
+                name_lbl = QLabel(pname)
+                name_lbl.setStyleSheet(
+                    f"{row_style} color: #c9d1d9; font-size: 11px;"
+                )
                 if getattr(player, "on_loan", False):
-                    parts.append("<span style='color:#d29922'>[LOAN]</span>")
+                    name_lbl.setText(f"{pname}  [L]")
+                grid.addWidget(name_lbl, ri, 3)
 
-                info = QLabel("  ".join(parts))
-                info.setStyleSheet("font-size: 11px;")
-                cly.addWidget(info)
+                positions = getattr(player, "positions", {}) or {}
+                fit_parts = sorted(
+                    [p for p, v in positions.items() if v >= 15],
+                    key=lambda p: positions.get(p, 0),
+                    reverse=True,
+                )
+                fit_lbl = QLabel(", ".join(fit_parts) if fit_parts else "-")
+                fit_lbl.setStyleSheet(
+                    f"{row_style} color: #8b949e; font-size: 11px;"
+                )
+                grid.addWidget(fit_lbl, ri, 4)
 
+                alt_text = ""
                 if self._analysis:
-                    alts = self._analysis.best_players_for_role(role_id, duty, top_n=4)
-                    alt_strs = [
+                    alts = self._analysis.best_players_for_role(
+                        role_id, duty, top_n=4,
+                    )
+                    alt_names = [
                         f"{_last_name(getattr(ap, 'display_name', '') or getattr(ap, 'name', ''))} ({asc:.0f})"
                         for ap, asc in alts
                         if ap is not player
                     ]
-                    if alt_strs:
-                        alt_lbl = QLabel("Alt: " + ", ".join(alt_strs[:3]))
-                        alt_lbl.setStyleSheet("color: #484f58; font-size: 10px;")
-                        cly.addWidget(alt_lbl)
+                    alt_text = ", ".join(alt_names[:2])
+                alt_lbl = QLabel(alt_text or "-")
+                alt_lbl.setStyleSheet(
+                    f"{row_style} color: #484f58; font-size: 10px;"
+                )
+                grid.addWidget(alt_lbl, ri, 5)
             else:
-                empty = QLabel("No suitable player found")
-                empty.setStyleSheet("color: #f85149; font-size: 11px;")
-                cly.addWidget(empty)
+                empty = QLabel("No suitable player")
+                empty.setStyleSheet(f"{row_style} color: #f85149; font-size: 11px;")
+                grid.addWidget(empty, ri, 3, 1, 3)
 
-            self._best_xi_layout.addWidget(card)
-
+        container = QWidget()
+        container.setLayout(grid)
+        self._best_xi_layout.addWidget(container)
         self._best_xi_layout.addStretch()
 
     def _update_gaps(self, gaps: list[dict[str, Any]]):

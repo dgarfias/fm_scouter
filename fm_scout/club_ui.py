@@ -1,6 +1,6 @@
 """Club viewer UI for FM Scout – table, filtering, detail dialog."""
 
-from PyQt6.QtCore import Qt, QAbstractTableModel, QModelIndex, QTimer
+from PyQt6.QtCore import Qt, QAbstractTableModel, QModelIndex, QTimer, QEvent
 from PyQt6.QtGui import QColor, QFont
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
@@ -112,6 +112,7 @@ class ClubTableModel(QAbstractTableModel):
         self._sort_col: int = -1
         self._sort_order: Qt.SortOrder = Qt.SortOrder.AscendingOrder
         self._filter_text: str = ""
+        self._hover_row: int = -1
         self._set_visible_columns(_DEFAULT_VISIBLE)
 
     def _set_visible_columns(self, visible: set[str]):
@@ -128,13 +129,34 @@ class ClubTableModel(QAbstractTableModel):
         self.beginResetModel()
         self._clubs = clubs
         self._apply_filter()
+        self._hover_row = -1
         self.endResetModel()
 
     def filter_by_name(self, text: str):
         self.beginResetModel()
         self._filter_text = text.strip().lower()
         self._apply_filter()
+        self._hover_row = -1
         self.endResetModel()
+
+    def set_hover_row(self, row: int):
+        new_row = row if 0 <= row < len(self._filtered) else -1
+        if new_row == self._hover_row:
+            return
+        old_row = self._hover_row
+        self._hover_row = new_row
+        self._emit_hover_row_change(old_row)
+        self._emit_hover_row_change(new_row)
+
+    def clear_hover_row(self):
+        self.set_hover_row(-1)
+
+    def _emit_hover_row_change(self, row: int):
+        if row < 0 or row >= len(self._filtered) or not self._visible_cols:
+            return
+        left = self.index(row, 0)
+        right = self.index(row, len(self._visible_cols) - 1)
+        self.dataChanged.emit(left, right, [Qt.ItemDataRole.BackgroundRole])
 
     def _apply_filter(self):
         if not self._filter_text:
@@ -192,6 +214,10 @@ class ClubTableModel(QAbstractTableModel):
             if key in ("reputation", "club_ability", "club_potential",
                        "squad_size", "avg_ca", "best_ca", "avg_age"):
                 return Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+
+        if role == Qt.ItemDataRole.BackgroundRole:
+            if index.row() == self._hover_row:
+                return QColor("#161b22")
 
         return None
 
@@ -420,6 +446,8 @@ class ClubViewerWidget(QWidget):
         self._table.setModel(self._model)
         self._table.setStyleSheet(SS_TABLE)
         self._table.setSortingEnabled(True)
+        self._table.setMouseTracking(True)
+        self._table.viewport().setMouseTracking(True)
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self._table.verticalHeader().setVisible(False)
@@ -430,6 +458,8 @@ class ClubViewerWidget(QWidget):
         self._table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._table.customContextMenuRequested.connect(self._show_column_menu)
         self._table.doubleClicked.connect(self._on_double_click)
+        self._table.entered.connect(lambda idx: self._model.set_hover_row(idx.row()))
+        self._table.viewport().installEventFilter(self)
         layout.addWidget(self._table)
 
         self._search_timer = QTimer(self)
@@ -484,3 +514,8 @@ class ClubViewerWidget(QWidget):
             return
         dlg = ClubDetailDialog(club, self._players, self._game_year, parent=self)
         dlg.exec()
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.Leave and obj is self._table.viewport():
+            self._model.clear_hover_row()
+        return super().eventFilter(obj, event)

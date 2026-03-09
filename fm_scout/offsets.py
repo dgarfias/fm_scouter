@@ -76,6 +76,7 @@ class StructOffsets:
     club_name_entry: int = 0xC0   # club -> name entry pointer
     competition_name_entry: int = 0x48  # competition -> name entry pointer
     competition_nation: int = 0x60      # competition -> nation pointer
+    competition_type: int = 0xF4        # competition type byte (0=top div, 1=div, 8=reserve, 33+=youth)
     nation_name: int = 0x18             # nation -> name entry pointer
     nation_continent: int = 0xF0        # nation -> continent pointer
     continent_name: int = 0x18          # continent -> name entry pointer
@@ -91,3 +92,67 @@ class StructOffsets:
 
 ATTR_OFFSETS = AttributeOffsets()
 STRUCT_OFFSETS = StructOffsets()
+
+# Attribute byte offsets inside the 54-byte plao.Patr block.
+# Source: FM24 CE table (FMCET24.CT, ptrPlayer -> plao.Patr+0x..)
+ATTRIBUTE_BYTE_OFFSETS: dict[str, int] = {
+    # Technical
+    'crossing': 0x00,
+    'dribbling': 0x01,
+    'finishing': 0x02,
+    'heading': 0x03,
+    'long_shots': 0x04,
+    'marking': 0x05,
+    'passing': 0x07,
+    'penalty_taking': 0x08,
+    'tackling': 0x09,
+    'first_touch': 0x16,
+    'technique': 0x17,
+    'corners': 0x1B,
+    'long_throws': 0x1E,
+    'free_kick_taking': 0x23,
+    # Mental
+    'off_the_ball': 0x06,
+    'vision': 0x0A,
+    'anticipation': 0x11,
+    'decisions': 0x12,
+    'positioning': 0x14,
+    'flair': 0x1A,
+    'teamwork': 0x1C,
+    'work_rate': 0x1D,
+    'leadership': 0x28,
+    'bravery': 0x2B,
+    'aggression': 0x2D,
+    'determination': 0x33,
+    'composure': 0x34,
+    'concentration': 0x35,
+    # Physical
+    'acceleration': 0x22,
+    'strength': 0x24,
+    'stamina': 0x25,
+    'pace': 0x26,
+    'jumping_reach': 0x27,
+    'balance': 0x2A,
+    'agility': 0x2E,
+    'natural_fitness': 0x32,
+    # Goalkeeping
+    'handling': 0x0B,
+    'aerial_reach': 0x0C,
+    'command_of_area': 0x0D,
+    'communication': 0x0E,
+    'kicking': 0x0F,
+    'throwing': 0x10,
+    'one_on_ones': 0x13,
+    'reflexes': 0x15,
+    'eccentricity': 0x1F,
+    'rushing_out': 0x20,
+    'punching': 0x21,
+    # Hidden
+    'left_foot': 0x18,
+    'right_foot': 0x19,
+    'dirtiness': 0x29,
+    'consistency': 0x2C,
+    'important_matches': 0x2F,
+    'injury_proneness': 0x30,
+    'versatility': 0x31,
+}

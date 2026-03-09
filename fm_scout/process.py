@@ -21,14 +21,20 @@ class MemoryRegion:
 
 
 def find_fm_process() -> ProcessInfo | None:
-    """Scan /proc for a Wine/Proton process running fm.exe."""
+    """Scan /proc for the Wine/Proton process running fm.exe.
+
+    Multiple processes contain 'fm.exe' in their cmdline (Steam reaper,
+    Proton launcher, etc.).  We want the actual Wine process whose cmdline
+    starts with a Wine-style path (``Z:\\...\\fm.exe``) or whose exe
+    points to a wine/proton binary.
+    """
+    candidates: list[ProcessInfo] = []
     for entry in os.listdir("/proc"):
         if not entry.isdigit():
             continue
         pid = int(entry)
         try:
-            cmdline_path = f"/proc/{pid}/cmdline"
-            with open(cmdline_path, "rb") as f:
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
                 raw = f.read()
             if not raw:
                 continue
@@ -44,11 +50,22 @@ def find_fm_process() -> ProcessInfo | None:
                     name = f.read().strip()
             except OSError:
                 name = ""
-
-            return ProcessInfo(pid=pid, name=name, cmdline=cmdline, exe_path=exe_path)
+            candidates.append(ProcessInfo(pid=pid, name=name, cmdline=cmdline, exe_path=exe_path))
         except (OSError, PermissionError):
             continue
-    return None
+
+    if not candidates:
+        return None
+
+    for c in candidates:
+        if c.cmdline.startswith("Z:\\") or c.cmdline.startswith("z:\\"):
+            return c
+
+    for c in candidates:
+        if "wine" in c.exe_path.lower() or "proton" in c.exe_path.lower():
+            return c
+
+    return candidates[-1]
 
 
 def get_memory_regions(pid: int) -> list[MemoryRegion]:
