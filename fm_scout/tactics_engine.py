@@ -212,7 +212,11 @@ def _attr_avg(player: Any, attr_names: tuple[str, ...] | list[str]) -> float:
 
 
 def _pure_attribute_score(player: Any, role_id: str, duty: str | None = None) -> float:
-    """Attribute-only suitability score (0-100), ignoring positional fit."""
+    """Attribute-only suitability score (0-100), ignoring positional fit.
+
+    Uses a power curve so average attributes (10-13) score much lower
+    than elite (16-20), reflecting how FM values the gap between tiers.
+    """
     role_def = ROLE_DEFINITIONS.get(role_id)
     if role_def is None:
         return 0.0
@@ -232,7 +236,11 @@ def _pure_attribute_score(player: Any, role_id: str, duty: str | None = None) ->
     sec_avg = _attr_avg(player, secondary_attrs) if secondary_attrs else key_avg
 
     weighted = key_avg * 0.65 + sec_avg * 0.35
-    return max(0.0, min(100.0, (weighted / 20.0) * 100.0))
+
+    # Power curve: (attr/20)^1.3 * 100
+    # avg 13 -> 57, avg 15 -> 69, avg 17 -> 81, avg 19 -> 94
+    normalized = max(0.0, weighted / 20.0)
+    return min(100.0, (normalized ** 1.3) * 100.0)
 
 
 # ---------------------------------------------------------------------------
@@ -548,20 +556,6 @@ class SquadAnalysis:
                 results.append((fid, ev))
         results.sort(key=lambda x: -x[1].get("overall_score", 0))
         return results[:top_n]
-
-    def squad_gaps(self, formation_id: str) -> list[dict[str, Any]]:
-        ev = self.evaluate_formation(formation_id)
-        gaps: list[dict[str, Any]] = []
-        for sr in ev.get("slots", []):
-            if sr["current_score"] < 50:
-                gaps.append({
-                    "position": sr["position"],
-                    "role": sr["role_id"],
-                    "duty": sr["duty"],
-                    "current_score": sr["current_score"],
-                    "severity": "critical" if sr["current_score"] < 30 else "moderate",
-                })
-        return gaps
 
     def recommend_style(self, formation_id: str) -> str:
         """Pick the best-fitting playing style for the current squad in a

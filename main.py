@@ -2136,7 +2136,10 @@ class MainWindow(QMainWindow):
 
         if hasattr(self._tactics_widget, 'set_data'):
             try:
-                self._tactics_widget.set_data(my_club=my_club, players=players)
+                self._tactics_widget.set_data(
+                    my_club=my_club, players=players,
+                    game_year=GAME_YEAR or 2024,
+                )
             except Exception:
                 logger.debug('Tactics widget set_data not available yet')
 

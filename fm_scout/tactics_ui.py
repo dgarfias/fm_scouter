@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import Counter
 from typing import Any
 
-from PyQt6.QtCore import Qt, QRectF, pyqtSignal, QSettings, QItemSelectionModel
+from PyQt6.QtCore import Qt, QRectF, pyqtSignal, QItemSelectionModel
 from PyQt6.QtGui import QColor, QFont, QPainter, QPen, QBrush, QPalette
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (
     QSplitter, QTabWidget, QSizePolicy, QAbstractItemView, QListView,
 )
 
+from fm_scout.offsets import ATTR_OFFSETS
 from fm_scout.tactics_engine import (
     SquadAnalysis, role_score, classify_team_tier, get_style_instructions,
 )
@@ -92,18 +93,26 @@ QTabBar::tab:hover { color: #c9d1d9; }
 
 
 def _score_color(score: float) -> QColor:
-    if score >= 75:
+    if score >= 85:
+        return QColor("#22c55e")
+    if score >= 70:
         return QColor("#3fb950")
-    if score >= 50:
+    if score >= 55:
         return QColor("#d29922")
+    if score >= 40:
+        return QColor("#ea580c")
     return QColor("#f85149")
 
 
 def _score_color_hex(score: float) -> str:
-    if score >= 75:
+    if score >= 85:
+        return "#22c55e"
+    if score >= 70:
         return "#3fb950"
-    if score >= 50:
+    if score >= 55:
         return "#d29922"
+    if score >= 40:
+        return "#ea580c"
     return "#f85149"
 
 
@@ -314,12 +323,8 @@ class TacticsBuilderWidget(QWidget):
         self._club_players: list[Any] = []
         self._hierarchy: dict[str, dict[str, dict[str, list[str]]]] = {}
         self._club_counts: dict[str, int] = {}
-        self._my_club_name: str = ""
-        self._settings = QSettings("FMScout", "FMScout")
-        saved_club = self._settings.value("tactics/my_club_name", "", type=str)
-        if saved_club:
-            self._my_club_name = saved_club
-
+        self._game_year: int = 2024
+        self._selected_club: str = ""
         self._analysis: SquadAnalysis | None = None
         self._current_eval: dict[str, Any] | None = None
         self._team_tier: str = ""
@@ -354,11 +359,6 @@ class TacticsBuilderWidget(QWidget):
         self._configure_combo_popup(self._cb_club)
         self._cb_club.addItem("Club")
         toolbar.addWidget(self._cb_club)
-
-        self._btn_my_club = QPushButton("My Club")
-        self._btn_my_club.setProperty("class", "secondaryBtn")
-        self._btn_my_club.clicked.connect(self._on_my_club)
-        toolbar.addWidget(self._btn_my_club)
 
         self._btn_analyze = QPushButton("Analyze Squad")
         self._btn_analyze.clicked.connect(self._on_analyze)
@@ -413,8 +413,8 @@ class TacticsBuilderWidget(QWidget):
         self._tabs = QTabWidget()
 
         self._best_xi_scroll, self._best_xi_layout = self._make_tab("Best XI")
-        self._gaps_scroll, self._gaps_layout = self._make_tab("Squad Gaps")
         self._rec_scroll, self._rec_layout = self._make_tab("Recommendations")
+        self._league_scroll, self._league_layout = self._make_tab("League Comparison")
 
         splitter.addWidget(self._tabs)
         splitter.setStretchFactor(0, 1)
@@ -461,8 +461,10 @@ class TacticsBuilderWidget(QWidget):
 
     # -- public API --------------------------------------------------------
 
-    def set_data(self, my_club=None, players: list[Any] | None = None):
+    def set_data(self, my_club=None, players: list[Any] | None = None,
+                 game_year: int = 2024):
         """Compatibility API used by main window scan flow."""
+        self._game_year = game_year
         players_list = players or []
         club_name = ""
         if isinstance(my_club, str):
@@ -474,12 +476,10 @@ class TacticsBuilderWidget(QWidget):
                 or ""
             )
         self.set_players(players_list, club_name)
-        if club_name:
-            self._on_my_club()
 
     def set_players(self, players: list[Any], my_club: str = ""):
         self._players = players
-        self._my_club_name = my_club
+        self._selected_club = ""
 
         hierarchy: dict[str, dict[str, dict[str, list[str]]]] = {}
         league_rep: dict[str, int] = {}
@@ -534,28 +534,7 @@ class TacticsBuilderWidget(QWidget):
             self._cb_continent.addItem(c)
         self._cb_continent.blockSignals(False)
 
-        if my_club:
-            self._auto_select_club(my_club)
-
     # -- hierarchy cascade -------------------------------------------------
-
-    def _auto_select_club(self, club_name: str):
-        for continent, nations in self._hierarchy.items():
-            for nation, leagues in nations.items():
-                for league, clubs in leagues.items():
-                    if club_name in clubs:
-                        self._cb_continent.setCurrentText(continent)
-                        self._on_continent_changed(continent)
-                        self._cb_nation.setCurrentText(nation)
-                        self._on_nation_changed(nation)
-                        self._cb_league.setCurrentText(league)
-                        self._on_league_changed(league)
-                        idx = self._cb_club.findData(club_name)
-                        if idx >= 0:
-                            self._cb_club.setCurrentIndex(idx)
-                        else:
-                            self._cb_club.setCurrentText(club_name)
-                        return
 
     def _on_continent_changed(self, text: str):
         self._cb_nation.blockSignals(True)
@@ -592,18 +571,12 @@ class TacticsBuilderWidget(QWidget):
 
     # -- actions -----------------------------------------------------------
 
-    def _on_my_club(self):
-        if self._my_club_name:
-            self._auto_select_club(self._my_club_name)
-            self._on_analyze()
-
     def _on_analyze(self):
         club_data = self._cb_club.currentData()
         club_name = club_data if club_data else self._cb_club.currentText()
         if not club_name or club_name == "Club":
             return
-        self._my_club_name = club_name
-        self._settings.setValue("tactics/my_club_name", club_name)
+        self._selected_club = club_name
 
         self._club_players = [
             p for p in self._players
@@ -622,6 +595,7 @@ class TacticsBuilderWidget(QWidget):
         self._lbl_tier.setText(f"Tier: {tier_label}")
 
         self._on_formation_changed()
+        self._update_league_comparison()
 
     def _on_formation_changed(self):
         if self._analysis is None:
@@ -636,7 +610,6 @@ class TacticsBuilderWidget(QWidget):
 
         self._update_pitch(ev)
         self._update_best_xi(ev)
-        self._update_gaps(self._analysis.squad_gaps(fid))
         self._update_recommendations(self._analysis)
 
     # -- view updates ------------------------------------------------------
@@ -801,81 +774,6 @@ class TacticsBuilderWidget(QWidget):
         self._best_xi_layout.addWidget(container)
         self._best_xi_layout.addStretch()
 
-    def _update_gaps(self, gaps: list[dict[str, Any]]):
-        _clear_layout(self._gaps_layout)
-
-        if not gaps:
-            ok = QLabel("No significant squad gaps detected.")
-            ok.setStyleSheet("color: #3fb950; font-size: 12px; padding: 12px;")
-            self._gaps_layout.addWidget(ok)
-            self._gaps_layout.addStretch()
-            return
-
-        _section(self._gaps_layout, "Weak Positions")
-
-        for gap in gaps:
-            severity = gap.get("severity", "moderate")
-            border = "#f85149" if severity == "critical" else "#d29922"
-
-            card = QFrame()
-            card.setStyleSheet(
-                f"QFrame {{ background-color: #161b22; border: 1px solid {border}; "
-                f"border-radius: 4px; padding: 8px; margin: 2px 0; }}"
-            )
-            cly = QVBoxLayout(card)
-            cly.setContentsMargins(8, 6, 8, 6)
-            cly.setSpacing(2)
-
-            pos = gap.get("position", "")
-            role_id = gap.get("role", "")
-            duty = gap.get("duty", "")
-            score = gap.get("current_score", 0)
-            role_def = ROLE_DEFINITIONS.get(role_id, {})
-            role_name = role_def.get("name", role_id)
-
-            header = QLabel(
-                f"{pos} \u2014 {role_name} ({duty.title()}) "
-                f"<span style='color:{_score_color_hex(score)}'>{score:.0f}</span> "
-                f"<span style='color:{border}'>[{severity.upper()}]</span>"
-            )
-            header.setStyleSheet(
-                "color: #f0f6fc; font-size: 12px; font-weight: 600;"
-            )
-            cly.addWidget(header)
-
-            key_attrs = role_def.get("key_attrs", [])
-            if key_attrs:
-                text = ", ".join(a.replace("_", " ").title() for a in key_attrs[:5])
-                attr_lbl = QLabel(f"Key attrs: {text}")
-                attr_lbl.setStyleSheet("color: #8b949e; font-size: 10px;")
-                cly.addWidget(attr_lbl)
-
-            if self._club_players:
-                candidates: list[tuple[str, float]] = []
-                for p in self._club_players:
-                    pos_fit = getattr(p, "positions", {}).get(pos, 0)
-                    if pos_fit >= 10:
-                        continue
-                    gen = role_score(p, role_id, duty)
-                    if gen >= 40:
-                        pn = (
-                            getattr(p, "display_name", "")
-                            or getattr(p, "name", "")
-                        )
-                        candidates.append((pn, gen))
-                candidates.sort(key=lambda x: -x[1])
-                if candidates:
-                    retrain_text = ", ".join(
-                        f"{_last_name(n)} ({s:.0f})" for n, s in candidates[:3]
-                    )
-                    rt_lbl = QLabel(f"Retrain: {retrain_text}")
-                    rt_lbl.setStyleSheet("color: #d2a8ff; font-size: 10px;")
-                    cly.addWidget(rt_lbl)
-
-            self._gaps_layout.addWidget(card)
-
-        self._gaps_layout.addStretch()
-
     def _update_recommendations(self, analysis: SquadAnalysis):
         _clear_layout(self._rec_layout)
 
@@ -1028,3 +926,180 @@ class TacticsBuilderWidget(QWidget):
             self._rec_layout.addWidget(tl)
 
         self._rec_layout.addStretch()
+
+    # -- league comparison -------------------------------------------------
+
+    @staticmethod
+    def _top25_for_club(players: list[Any]) -> list[Any]:
+        """Select top 25 players for a club, ensuring at least 2 GKs."""
+        gks = sorted(
+            [p for p in players if getattr(p, "best_position", "") == "GK"],
+            key=lambda p: getattr(p, "current_ability", 0),
+            reverse=True,
+        )[:2]
+        gk_set = set(id(p) for p in gks)
+        outfield = sorted(
+            [p for p in players if id(p) not in gk_set],
+            key=lambda p: getattr(p, "current_ability", 0),
+            reverse=True,
+        )[:25 - len(gks)]
+        return gks + outfield
+
+    def _update_league_comparison(self):
+        _clear_layout(self._league_layout)
+
+        league = self._cb_league.currentText()
+        if not league or league == "League":
+            msg = QLabel("Select a league and analyze a squad first.")
+            msg.setStyleSheet("color: #8b949e; font-size: 12px; padding: 12px;")
+            self._league_layout.addWidget(msg)
+            self._league_layout.addStretch()
+            return
+
+        my_club = self._selected_club
+        if not my_club:
+            return
+
+        league_players = [
+            p for p in self._players
+            if getattr(p, "league", "") == league
+            and getattr(p, "current_ability", 0) > 0
+        ]
+        if not league_players:
+            return
+
+        all_clubs: dict[str, list[Any]] = {}
+        for p in league_players:
+            all_clubs.setdefault(getattr(p, "club", ""), []).append(p)
+
+        clubs = {name: pls for name, pls in all_clubs.items() if len(pls) >= 15}
+        if my_club in all_clubs and my_club not in clubs:
+            clubs[my_club] = all_clubs[my_club]
+
+        all_attrs = list(
+            ATTR_OFFSETS.TECHNICAL_FIELDS
+            + ATTR_OFFSETS.MENTAL_FIELDS
+            + ATTR_OFFSETS.PHYSICAL_FIELDS
+            + ATTR_OFFSETS.GOALKEEPER_FIELDS
+        )
+
+        club_avgs: dict[str, dict[str, float]] = {}
+        for club_name, club_players in clubs.items():
+            top25 = self._top25_for_club(club_players)
+            avgs: dict[str, float] = {}
+            for attr in all_attrs:
+                total = sum(getattr(p, attr, 0) or 0 for p in top25)
+                avgs[attr] = total / 25.0
+            club_avgs[club_name] = avgs
+
+        num_clubs = len(club_avgs)
+        if my_club not in club_avgs:
+            return
+
+        def _ordinal(n: int) -> str:
+            if 11 <= n % 100 <= 13:
+                return f"{n}th"
+            return f"{n}{['th','st','nd','rd'][min(n % 10, 3)] if n % 10 < 4 else 'th'}"
+
+        _section(self._league_layout, f"League Comparison — {league}")
+
+        header_lbl = QLabel(
+            f"Your team: <b>{my_club}</b> vs {num_clubs} clubs in {league}"
+        )
+        header_lbl.setStyleSheet("color: #c9d1d9; font-size: 11px; padding: 2px 0 6px 0;")
+        self._league_layout.addWidget(header_lbl)
+
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setSpacing(0)
+
+        hdr_style = (
+            "color: #8b949e; font-size: 10px; font-weight: 700; "
+            "padding: 4px 6px; border-bottom: 1px solid #30363d;"
+        )
+        for ci, label in enumerate(["ATTRIBUTE", "YOUR AVG", "RANK", "BEST TEAM", "BEST AVG"]):
+            h = QLabel(label)
+            h.setStyleSheet(hdr_style)
+            grid.addWidget(h, 0, ci)
+
+        grid.setColumnStretch(0, 4)
+        grid.setColumnStretch(1, 2)
+        grid.setColumnStretch(2, 2)
+        grid.setColumnStretch(3, 4)
+        grid.setColumnStretch(4, 2)
+
+        row_even = (
+            "background-color: #161b22; padding: 3px 6px;"
+            "border-bottom: 1px solid #1b2028;"
+        )
+        row_odd = (
+            "background-color: #0d1117; padding: 3px 6px;"
+            "border-bottom: 1px solid #1b2028;"
+        )
+
+        sections = [
+            ("Technical", ATTR_OFFSETS.TECHNICAL_FIELDS),
+            ("Mental", ATTR_OFFSETS.MENTAL_FIELDS),
+            ("Physical", ATTR_OFFSETS.PHYSICAL_FIELDS),
+            ("Goalkeeping", ATTR_OFFSETS.GOALKEEPER_FIELDS),
+        ]
+
+        ri = 0
+        for section_name, fields in sections:
+            ri += 1
+            sec_lbl = QLabel(section_name)
+            sec_lbl.setStyleSheet(
+                "color: #58a6ff; font-size: 10px; font-weight: 700; "
+                "padding: 6px 6px 2px 6px;"
+            )
+            grid.addWidget(sec_lbl, ri, 0, 1, 5)
+
+            for attr in fields:
+                ri += 1
+                row_style = row_even if ri % 2 == 0 else row_odd
+
+                ranked = sorted(
+                    club_avgs.items(),
+                    key=lambda x: x[1].get(attr, 0),
+                    reverse=True,
+                )
+                rank = next(
+                    i for i, (cn, _) in enumerate(ranked, 1) if cn == my_club
+                )
+                best_club, best_avgs = ranked[0]
+                my_avg = club_avgs[my_club][attr]
+                best_avg = best_avgs[attr]
+
+                if rank <= 3:
+                    rank_clr = "#3fb950"
+                elif rank <= num_clubs // 2:
+                    rank_clr = "#d29922"
+                else:
+                    rank_clr = "#f85149"
+
+                display = attr.replace("_", " ").title()
+
+                attr_lbl = QLabel(display)
+                attr_lbl.setStyleSheet(f"{row_style} color: #c9d1d9; font-size: 11px;")
+                grid.addWidget(attr_lbl, ri, 0)
+
+                avg_lbl = QLabel(f"{my_avg:.1f}")
+                avg_lbl.setStyleSheet(f"{row_style} color: #f0f6fc; font-size: 11px; font-weight: 600;")
+                grid.addWidget(avg_lbl, ri, 1)
+
+                rank_lbl = QLabel(f"{_ordinal(rank)} of {num_clubs}")
+                rank_lbl.setStyleSheet(f"{row_style} color: {rank_clr}; font-size: 11px; font-weight: 600;")
+                grid.addWidget(rank_lbl, ri, 2)
+
+                best_lbl = QLabel(best_club)
+                best_lbl.setStyleSheet(f"{row_style} color: #8b949e; font-size: 11px;")
+                grid.addWidget(best_lbl, ri, 3)
+
+                best_avg_lbl = QLabel(f"{best_avg:.1f}")
+                best_avg_lbl.setStyleSheet(f"{row_style} color: #8b949e; font-size: 11px;")
+                grid.addWidget(best_avg_lbl, ri, 4)
+
+        container = QWidget()
+        container.setLayout(grid)
+        self._league_layout.addWidget(container)
+        self._league_layout.addStretch()
