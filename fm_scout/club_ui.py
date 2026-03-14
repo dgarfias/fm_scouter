@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import (
 )
 
 from .club import Club
+from .locale import tr
 
 SS_TABLE = """
 QTableView {
@@ -56,22 +57,25 @@ QLabel {
 """
 
 ALL_COLUMNS: list[tuple[str, str, int]] = [
-    ("name",           "Club",         220),
-    ("short_name",     "Short Name",   140),
-    ("nation",         "Nation",       100),
-    ("league",         "League",       160),
-    ("continent",      "Continent",     90),
-    ("reputation",     "Rep",           60),
-    ("club_ability",   "Ability",       60),
-    ("club_potential",  "Potential",     60),
-    ("squad_size",     "Squad",         50),
-    ("avg_ca",         "Avg CA",        60),
-    ("best_ca",        "Best CA",       60),
-    ("avg_age",        "Avg Age",       60),
+    ("name",           tr('clubs.col_club'),       220),
+    ("short_name",     tr('clubs.col_short_name'), 140),
+    ("nation",         tr('clubs.col_nation'),     100),
+    ("league",         tr('clubs.col_league'),     160),
+    ("continent",      tr('clubs.col_continent'),   90),
+    ("reputation",     tr('clubs.col_rep'),         60),
+    ("club_ability",   tr('clubs.col_ability'),     60),
+    ("club_potential", tr('clubs.col_potential'),    60),
+    ("squad_size",     tr('clubs.col_squad'),       50),
+    ("avg_ca",         tr('clubs.col_avg_ca'),      60),
+    ("best_ca",        tr('clubs.col_best_ca'),     60),
+    ("avg_age",        tr('clubs.col_avg_age'),     60),
+    ("squad_value",    tr('clubs.col_squad_value'), 90),
+    ("avg_value",      tr('clubs.col_avg_value'),   80),
 ]
 
 _DEFAULT_VISIBLE = {"name", "nation", "league", "reputation",
-                    "club_ability", "club_potential", "squad_size"}
+                    "club_ability", "club_potential", "squad_size",
+                    "avg_ca", "best_ca", "avg_age", "squad_value", "avg_value"}
 
 
 def _rep_color(value: int) -> QColor | None:
@@ -198,6 +202,13 @@ class ClubTableModel(QAbstractTableModel):
                 return f"{value:.1f}" if value else ""
             if key == "reputation":
                 return str(value) if value else ""
+            if key in ("squad_value", "avg_value"):
+                v = int(value) if value else 0
+                if v >= 1_000_000:
+                    return f"\u20ac{v / 1_000_000:.1f}M"
+                if v >= 1_000:
+                    return f"\u20ac{v // 1000}k"
+                return f"\u20ac{v}" if v > 0 else ""
             return str(value) if value else ""
 
         if role == Qt.ItemDataRole.ForegroundRole:
@@ -254,12 +265,70 @@ class ClubTableModel(QAbstractTableModel):
         return None
 
 
+class _SquadTableModel(QAbstractTableModel):
+    def __init__(self, headers: list[str], rows: list[list], parent=None):
+        super().__init__(parent)
+        self._headers = headers
+        self._rows = list(rows)
+
+    def rowCount(self, parent=QModelIndex()):
+        return len(self._rows)
+
+    def columnCount(self, parent=QModelIndex()):
+        return len(self._headers)
+
+    def data(self, index, role=Qt.ItemDataRole.DisplayRole):
+        if not index.isValid():
+            return None
+        row = index.row()
+        col = index.column()
+        if row >= len(self._rows) or col >= len(self._rows[row]):
+            return None
+        val = self._rows[row][col]
+
+        if role == Qt.ItemDataRole.DisplayRole:
+            return str(val) if val else ""
+
+        if role == Qt.ItemDataRole.ForegroundRole:
+            if col in (3, 4) and isinstance(val, (int, float)) and val > 0:
+                c = _ca_color(float(val))
+                if c:
+                    return c
+
+        if role == Qt.ItemDataRole.TextAlignmentRole:
+            if col in (2, 3, 4):
+                return (Qt.AlignmentFlag.AlignRight
+                        | Qt.AlignmentFlag.AlignVCenter)
+
+        return None
+
+    def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):
+        if orientation == Qt.Orientation.Horizontal and role == Qt.ItemDataRole.DisplayRole:
+            if section < len(self._headers):
+                return self._headers[section]
+        return None
+
+    def sort(self, column, order=Qt.SortOrder.AscendingOrder):
+        self.beginResetModel()
+        reverse = order == Qt.SortOrder.DescendingOrder
+
+        def key(row):
+            v = row[column] if column < len(row) else ""
+            if isinstance(v, (int, float)):
+                return (0, v)
+            return (1, str(v).lower())
+
+        self._rows.sort(key=key, reverse=reverse)
+        self.endResetModel()
+
+
 class ClubDetailDialog(QDialog):
     def __init__(self, club: Club, players: list, game_year: int = 2024,
                  parent=None):
         super().__init__(parent)
         self.setWindowTitle(club.display_name)
-        self.setMinimumSize(600, 500)
+        self.setMinimumSize(800, 600)
+        self.resize(900, 700)
         self.setStyleSheet(SS_WIDGET)
 
         layout = QVBoxLayout(self)
@@ -268,41 +337,58 @@ class ClubDetailDialog(QDialog):
         header = self._build_header(club)
         layout.addWidget(header)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setStyleSheet("QScrollArea { border: none; }")
-        content = QWidget()
-        content_layout = QVBoxLayout(content)
-        content_layout.setContentsMargins(0, 8, 0, 0)
-
         current_squad = []
         loaned_out = []
+        club_addr = int(getattr(club, "address", 0) or 0)
+
+        def _matches_current(player) -> bool:
+            p_addr = int(getattr(player, "club_address", 0) or 0)
+            if club_addr and p_addr:
+                return p_addr == club_addr
+            if p_addr and not club_addr:
+                return False
+            if (getattr(player, "club", "") or "") != club.name:
+                return False
+            if club.league and (getattr(player, "league", "") or "") != club.league:
+                return False
+            if club.nation and (getattr(player, "league_nation", "") or "") != club.nation:
+                return False
+            return True
+
+        def _matches_parent(player) -> bool:
+            p_addr = int(getattr(player, "parent_club_address", 0) or 0)
+            if club_addr and p_addr:
+                return p_addr == club_addr
+            if p_addr and not club_addr:
+                return False
+            if (getattr(player, "parent_club", "") or "") != club.name:
+                return False
+            if club.league and (getattr(player, "league", "") or "") != club.league:
+                return False
+            if club.nation and (getattr(player, "league_nation", "") or "") != club.nation:
+                return False
+            return True
+
         for p in players:
             if not hasattr(p, "club") or p.current_ability <= 0:
                 continue
-            if getattr(p, "on_loan", False) and getattr(p, "parent_club", "") == club.name:
+            if getattr(p, "on_loan", False) and _matches_parent(p):
                 loaned_out.append(p)
-            elif p.club == club.name:
+            elif _matches_current(p):
                 current_squad.append(p)
 
         current_squad.sort(key=lambda p: p.current_ability, reverse=True)
         loaned_out.sort(key=lambda p: p.current_ability, reverse=True)
 
         if current_squad:
-            content_layout.addWidget(self._section_label("Current Squad"))
-            grid = self._build_player_grid(current_squad, game_year, is_loan_section=False)
-            content_layout.addWidget(grid)
+            layout.addWidget(self._section_label(tr('clubs.current_squad')))
+            table = self._build_player_grid(current_squad, game_year, is_loan_section=False)
+            layout.addWidget(table, 1)
 
         if loaned_out:
-            content_layout.addSpacing(12)
-            content_layout.addWidget(self._section_label("Loaned Out"))
-            grid = self._build_player_grid(loaned_out, game_year, is_loan_section=True)
-            content_layout.addWidget(grid)
-
-        content_layout.addStretch()
-        scroll.setWidget(content)
-        layout.addWidget(scroll)
+            layout.addWidget(self._section_label(tr('clubs.loaned_out')))
+            table = self._build_player_grid(loaned_out, game_year, is_loan_section=True)
+            layout.addWidget(table, 1)
 
     def _build_header(self, club: Club) -> QWidget:
         w = QWidget()
@@ -329,13 +415,13 @@ class ClubDetailDialog(QDialog):
 
         row = 2
         stats = [
-            ("Reputation", str(club.reputation)),
-            ("Squad", str(club.squad_size)),
-            ("Ability", f"{club.club_ability:.1f}"),
-            ("Potential", f"{club.club_potential:.1f}"),
-            ("Avg CA", f"{club.avg_ca:.1f}"),
-            ("Best CA", str(club.best_ca)),
-            ("Avg Age", f"{club.avg_age:.1f}"),
+            (tr('clubs.stat_reputation'), str(club.reputation)),
+            (tr('clubs.stat_squad'), str(club.squad_size)),
+            (tr('clubs.stat_ability'), f"{club.club_ability:.1f}"),
+            (tr('clubs.stat_potential'), f"{club.club_potential:.1f}"),
+            (tr('clubs.stat_avg_ca'), f"{club.avg_ca:.1f}"),
+            (tr('clubs.stat_best_ca'), str(club.best_ca)),
+            (tr('clubs.stat_avg_age'), f"{club.avg_age:.1f}"),
         ]
         col = 0
         for label, val in stats:
@@ -362,60 +448,52 @@ class ClubDetailDialog(QDialog):
         return lbl
 
     def _build_player_grid(self, players: list, game_year: int,
-                           is_loan_section: bool) -> QWidget:
-        w = QWidget()
-        grid = QGridLayout(w)
-        grid.setContentsMargins(0, 0, 0, 0)
-        grid.setSpacing(2)
+                           is_loan_section: bool) -> QTableView:
+        headers = [
+            tr('clubs.player_col_name'), tr('clubs.player_col_pos'),
+            tr('clubs.player_col_age'), tr('clubs.player_col_ca'),
+            tr('clubs.player_col_pa'), tr('clubs.player_col_status'),
+        ]
 
-        headers = ["Name", "Pos", "Age", "CA", "PA", "Status"]
-        header_font = QFont()
-        header_font.setBold(True)
-        for col, h in enumerate(headers):
-            lbl = QLabel(h)
-            lbl.setFont(header_font)
-            lbl.setStyleSheet("color: #8b949e; font-size: 11px; padding: 2px 4px;")
-            grid.addWidget(lbl, 0, col)
-
-        dim_style = "color: #484f58; font-size: 11px; padding: 2px 4px;"
-        normal_style = "color: #c9d1d9; font-size: 11px; padding: 2px 4px;"
-
-        for row, p in enumerate(players, start=1):
-            style = dim_style if is_loan_section else normal_style
+        rows: list[list] = []
+        for p in players:
             name = getattr(p, "display_name", "") or getattr(p, "name", "")
-            pos = getattr(p, "best_position", "") or ""
-            age = ""
+            pos = getattr(p, "position_str", "") or getattr(p, "best_position", "") or ""
+            age = 0
             if hasattr(p, "birth_year") and p.birth_year and p.birth_year > 1900:
-                age = str(game_year - p.birth_year)
-            ca = str(p.current_ability) if p.current_ability else ""
-            pa = str(p.potential_ability) if hasattr(p, "potential_ability") and p.potential_ability else ""
+                age = game_year - p.birth_year
+            ca = p.current_ability or 0
+            pa = getattr(p, "potential_ability", 0) or 0
 
             status = ""
             if is_loan_section:
                 loan_club = getattr(p, "club", "")
                 if loan_club:
-                    status = f"Loaned out to {loan_club}"
+                    status = tr('clubs.loaned_to', club=loan_club)
             elif getattr(p, "on_loan", False):
                 parent = getattr(p, "parent_club", "")
                 if parent:
-                    status = f"Loaned in from {parent}"
+                    status = tr('clubs.loaned_from', club=parent)
 
-            cells = [name, pos, age, ca, pa, status]
-            for col, text in enumerate(cells):
-                lbl = QLabel(text)
-                lbl.setStyleSheet(style)
-                if col in (2, 3, 4):
-                    lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-                    ca_val = float(text) if text else 0
-                    if col in (3, 4) and not is_loan_section:
-                        c = _ca_color(ca_val)
-                        if c:
-                            lbl.setStyleSheet(
-                                f"color: {c.name()}; font-size: 11px; padding: 2px 4px;"
-                            )
-                grid.addWidget(lbl, row, col)
+            rows.append([name, pos, age, ca, pa, status])
 
-        return w
+        model = _SquadTableModel(headers, rows)
+        table = QTableView()
+        table.setModel(model)
+        table.setStyleSheet(SS_TABLE)
+        table.setSortingEnabled(True)
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        table.verticalHeader().setVisible(False)
+        hdr = table.horizontalHeader()
+        hdr.setStretchLastSection(True)
+        hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        hdr.resizeSection(1, 140)
+        hdr.resizeSection(2, 50)
+        hdr.resizeSection(3, 50)
+        hdr.resizeSection(4, 50)
+        return table
 
 
 class ClubViewerWidget(QWidget):
@@ -430,12 +508,12 @@ class ClubViewerWidget(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
 
         toolbar = QHBoxLayout()
-        search_label = QLabel("Search:")
+        search_label = QLabel(tr('clubs.search_label'))
         search_label.setStyleSheet("color: #8b949e; font-size: 12px;")
         toolbar.addWidget(search_label)
 
         self._search = QLineEdit()
-        self._search.setPlaceholderText("Filter clubs…")
+        self._search.setPlaceholderText(tr('clubs.search_placeholder'))
         self._search.setMaximumWidth(260)
         toolbar.addWidget(self._search)
         toolbar.addStretch()

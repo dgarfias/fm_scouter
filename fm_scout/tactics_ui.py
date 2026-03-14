@@ -20,6 +20,7 @@ from fm_scout.tactics_engine import (
 from fm_scout.tactics_data import (
     FORMATIONS, ROLE_DEFINITIONS, PLAYING_STYLES, FM24_META, POSITION_TO_ROLES,
 )
+from fm_scout.locale import tr
 
 # ---------------------------------------------------------------------------
 # Stylesheet
@@ -322,7 +323,7 @@ class TacticsBuilderWidget(QWidget):
         self._players: list[Any] = []
         self._club_players: list[Any] = []
         self._hierarchy: dict[str, dict[str, dict[str, list[str]]]] = {}
-        self._club_counts: dict[str, int] = {}
+        self._club_counts: dict[tuple[str, str, str, str], int] = {}
         self._game_year: int = 2024
         self._selected_club: str = ""
         self._analysis: SquadAnalysis | None = None
@@ -339,28 +340,28 @@ class TacticsBuilderWidget(QWidget):
 
         self._cb_continent = QComboBox()
         self._configure_combo_popup(self._cb_continent)
-        self._cb_continent.addItem("Continent")
+        self._cb_continent.addItem(tr('tactics.continent'))
         self._cb_continent.currentTextChanged.connect(self._on_continent_changed)
         toolbar.addWidget(self._cb_continent)
 
         self._cb_nation = QComboBox()
         self._configure_combo_popup(self._cb_nation)
-        self._cb_nation.addItem("Nation")
+        self._cb_nation.addItem(tr('tactics.nation'))
         self._cb_nation.currentTextChanged.connect(self._on_nation_changed)
         toolbar.addWidget(self._cb_nation)
 
         self._cb_league = QComboBox()
         self._configure_combo_popup(self._cb_league)
-        self._cb_league.addItem("League")
+        self._cb_league.addItem(tr('tactics.league'))
         self._cb_league.currentTextChanged.connect(self._on_league_changed)
         toolbar.addWidget(self._cb_league)
 
         self._cb_club = QComboBox()
         self._configure_combo_popup(self._cb_club)
-        self._cb_club.addItem("Club")
+        self._cb_club.addItem(tr('tactics.club'))
         toolbar.addWidget(self._cb_club)
 
-        self._btn_analyze = QPushButton("Analyze Squad")
+        self._btn_analyze = QPushButton(tr('tactics.analyze'))
         self._btn_analyze.clicked.connect(self._on_analyze)
         toolbar.addWidget(self._btn_analyze)
 
@@ -385,7 +386,7 @@ class TacticsBuilderWidget(QWidget):
         left_ly.setContentsMargins(0, 0, 0, 0)
 
         fmt_row = QHBoxLayout()
-        fmt_lbl = QLabel("Formation:")
+        fmt_lbl = QLabel(tr('tactics.formation'))
         fmt_lbl.setStyleSheet("color: #8b949e; font-size: 12px;")
         fmt_row.addWidget(fmt_lbl)
 
@@ -412,9 +413,9 @@ class TacticsBuilderWidget(QWidget):
         # right panel — tabs
         self._tabs = QTabWidget()
 
-        self._best_xi_scroll, self._best_xi_layout = self._make_tab("Best XI")
-        self._rec_scroll, self._rec_layout = self._make_tab("Recommendations")
-        self._league_scroll, self._league_layout = self._make_tab("League Comparison")
+        self._best_xi_scroll, self._best_xi_layout = self._make_tab(tr('tactics.best_xi'))
+        self._rec_scroll, self._rec_layout = self._make_tab(tr('tactics.recommendations'))
+        self._league_scroll, self._league_layout = self._make_tab(tr('tactics.league_comparison'))
 
         splitter.addWidget(self._tabs)
         splitter.setStretchFactor(0, 1)
@@ -483,14 +484,14 @@ class TacticsBuilderWidget(QWidget):
 
         hierarchy: dict[str, dict[str, dict[str, list[str]]]] = {}
         league_rep: dict[str, int] = {}
-        club_counts: dict[str, int] = {}
+        club_counts: dict[tuple[str, str, str, str], int] = {}
 
         for p in players:
             if not getattr(p, "club", "") or getattr(p, "current_ability", 0) <= 0:
                 continue
-            continent = getattr(p, "league_continent", "") or "Unknown"
-            nation = getattr(p, "league_nation", "") or "Unknown"
-            league = getattr(p, "league", "") or "Unknown"
+            continent = getattr(p, "league_continent", "") or tr('tactics.unknown')
+            nation = getattr(p, "league_nation", "") or tr('tactics.unknown')
+            league = getattr(p, "league", "") or tr('tactics.unknown')
             club = p.club
 
             clubs_list = (
@@ -502,7 +503,8 @@ class TacticsBuilderWidget(QWidget):
             if club not in clubs_list:
                 clubs_list.append(club)
 
-            club_counts[club] = club_counts.get(club, 0) + 1
+            club_key = (continent, nation, league, club)
+            club_counts[club_key] = club_counts.get(club_key, 0) + 1
 
             wrep = getattr(p, "world_reputation", 0) or 0
             if wrep > league_rep.get(league, 0):
@@ -529,7 +531,7 @@ class TacticsBuilderWidget(QWidget):
 
         self._cb_continent.blockSignals(True)
         self._cb_continent.clear()
-        self._cb_continent.addItem("Continent")
+        self._cb_continent.addItem(tr('tactics.continent'))
         for c in sorted(hierarchy):
             self._cb_continent.addItem(c)
         self._cb_continent.blockSignals(False)
@@ -539,7 +541,7 @@ class TacticsBuilderWidget(QWidget):
     def _on_continent_changed(self, text: str):
         self._cb_nation.blockSignals(True)
         self._cb_nation.clear()
-        self._cb_nation.addItem("Nation")
+        self._cb_nation.addItem(tr('tactics.nation'))
         if text in self._hierarchy:
             for n in sorted(self._hierarchy[text]):
                 self._cb_nation.addItem(n)
@@ -549,7 +551,7 @@ class TacticsBuilderWidget(QWidget):
     def _on_nation_changed(self, text: str):
         self._cb_league.blockSignals(True)
         self._cb_league.clear()
-        self._cb_league.addItem("League")
+        self._cb_league.addItem(tr('tactics.league'))
         continent = self._cb_continent.currentText()
         leagues_dict = self._hierarchy.get(continent, {}).get(text, {})
         for lg in leagues_dict:
@@ -560,27 +562,49 @@ class TacticsBuilderWidget(QWidget):
     def _on_league_changed(self, text: str):
         self._cb_club.blockSignals(True)
         self._cb_club.clear()
-        self._cb_club.addItem("Club")
+        self._cb_club.addItem(tr('tactics.club'))
         continent = self._cb_continent.currentText()
         nation = self._cb_nation.currentText()
         clubs = self._hierarchy.get(continent, {}).get(nation, {}).get(text, [])
         for club in clubs:
-            count = self._club_counts.get(club, 0)
-            self._cb_club.addItem(f"{club} ({count})", club)
+            club_key = (continent, nation, text, club)
+            count = self._club_counts.get(club_key, 0)
+            self._cb_club.addItem(f"{club} ({count})", club_key)
         self._cb_club.blockSignals(False)
 
     # -- actions -----------------------------------------------------------
 
     def _on_analyze(self):
         club_data = self._cb_club.currentData()
-        club_name = club_data if club_data else self._cb_club.currentText()
-        if not club_name or club_name == "Club":
+        if isinstance(club_data, tuple) and len(club_data) == 4:
+            sel_continent, sel_nation, sel_league, club_name = club_data
+        else:
+            club_name = club_data if club_data else self._cb_club.currentText()
+            sel_continent = self._cb_continent.currentText()
+            sel_nation = self._cb_nation.currentText()
+            sel_league = self._cb_league.currentText()
+        if not club_name or club_name == tr('tactics.club'):
             return
         self._selected_club = club_name
 
         self._club_players = [
             p for p in self._players
             if getattr(p, "club", "") == club_name
+            and (
+                not sel_continent
+                or sel_continent == tr('tactics.continent')
+                or getattr(p, "league_continent", "") == sel_continent
+            )
+            and (
+                not sel_nation
+                or sel_nation == tr('tactics.nation')
+                or getattr(p, "league_nation", "") == sel_nation
+            )
+            and (
+                not sel_league
+                or sel_league == tr('tactics.league')
+                or getattr(p, "league", "") == sel_league
+            )
             and getattr(p, "current_ability", 0) > 0
         ]
         if not self._club_players:
@@ -589,7 +613,7 @@ class TacticsBuilderWidget(QWidget):
         self._analysis = SquadAnalysis(self._club_players)
         league = self._cb_league.currentText()
         self._team_tier = classify_team_tier(
-            self._club_players, league if league != "League" else None,
+            self._club_players, league if league != tr('tactics.league') else None,
         )
         tier_label = self._team_tier.replace("_", " ").title()
         self._lbl_tier.setText(f"Tier: {tier_label}")
@@ -658,7 +682,7 @@ class TacticsBuilderWidget(QWidget):
             "color: #8b949e; font-size: 10px; font-weight: 700; "
             "padding: 4px 6px; border-bottom: 1px solid #30363d;"
         )
-        for ci, label in enumerate(["POS", "ROLE / DUTY", "SCORE", "PLAYER", "POSITION", "ALT"]):
+        for ci, label in enumerate([tr('tactics.col_pos'), tr('tactics.col_role_duty'), tr('tactics.col_score'), tr('tactics.col_player'), tr('tactics.col_position'), tr('tactics.col_alt')]):
             h = QLabel(label)
             h.setStyleSheet(hdr_style)
             grid.addWidget(h, 0, ci)
@@ -765,7 +789,7 @@ class TacticsBuilderWidget(QWidget):
                 )
                 grid.addWidget(alt_lbl, ri, 5)
             else:
-                empty = QLabel("No suitable player")
+                empty = QLabel(tr('msg.no_suitable_player'))
                 empty.setStyleSheet(f"{row_style} color: #f85149; font-size: 11px;")
                 grid.addWidget(empty, ri, 3, 1, 3)
 
@@ -780,7 +804,7 @@ class TacticsBuilderWidget(QWidget):
         fid = self._cb_formation.currentData()
 
         # -- top formations --
-        _section(self._rec_layout, "Top Formations")
+        _section(self._rec_layout, tr('tactics.top_formations'))
         for rank, (f_id, f_ev) in enumerate(
             analysis.recommend_formations(top_n=5), 1
         ):
@@ -797,7 +821,7 @@ class TacticsBuilderWidget(QWidget):
 
         # -- recommended style + instructions --
         if fid:
-            _section(self._rec_layout, "Recommended Style")
+            _section(self._rec_layout, tr('tactics.recommended_style'))
             style_id = analysis.recommend_style(fid)
             style_info = get_style_instructions(style_id)
             style_name = style_info.get(
@@ -817,7 +841,7 @@ class TacticsBuilderWidget(QWidget):
                 )
                 self._rec_layout.addWidget(d_lbl)
 
-            _section(self._rec_layout, "Tactical Instructions")
+            _section(self._rec_layout, tr('tactics.tactical_instructions'))
 
             mentality = style_info.get("mentality", "balanced")
             m_lbl = QLabel(f"Mentality: <b>{mentality.title()}</b>")
@@ -825,9 +849,9 @@ class TacticsBuilderWidget(QWidget):
             self._rec_layout.addWidget(m_lbl)
 
             phase_labels = [
-                ("in_possession", "In Possession"),
-                ("in_transition", "In Transition"),
-                ("out_of_possession", "Out of Possession"),
+                ("in_possession", tr('tactics.in_possession')),
+                ("in_transition", tr('tactics.in_transition')),
+                ("out_of_possession", tr('tactics.out_of_possession')),
             ]
             for phase_key, phase_title in phase_labels:
                 phase_data = style_info.get(phase_key, {})
@@ -842,7 +866,7 @@ class TacticsBuilderWidget(QWidget):
                 for key, value in phase_data.items():
                     display_key = key.replace("_", " ").title()
                     if isinstance(value, bool):
-                        display_val = "Yes" if value else "No"
+                        display_val = tr('player.yes') if value else tr('player.no')
                         clr = "#3fb950" if value else "#f85149"
                     else:
                         display_val = str(value).replace("_", " ").title()
@@ -856,7 +880,7 @@ class TacticsBuilderWidget(QWidget):
 
         # -- duty balance --
         if self._current_eval:
-            _section(self._rec_layout, "Duty Balance")
+            _section(self._rec_layout, tr('tactics.duty_balance'))
             bal = self._current_eval.get("duty_balance", {})
             atk = bal.get("attack", 0)
             sup = bal.get("support", 0)
@@ -869,28 +893,20 @@ class TacticsBuilderWidget(QWidget):
 
             warnings = []
             if atk > 5:
-                warnings.append(
-                    "Too many attack duties \u2014 vulnerable at the back"
-                )
+                warnings.append(tr('tactics.warn_too_many_attack'))
             if dfn > 5:
-                warnings.append(
-                    "Too many defend duties \u2014 may lack creativity"
-                )
+                warnings.append(tr('tactics.warn_too_many_defend'))
             if sup < 2:
-                warnings.append(
-                    "Very few support duties \u2014 transitions may suffer"
-                )
+                warnings.append(tr('tactics.warn_few_support'))
             if atk == 0:
-                warnings.append(
-                    "No attack duties \u2014 may struggle to score"
-                )
+                warnings.append(tr('tactics.warn_no_attack'))
             for w in warnings:
                 wl = QLabel(f"\u26a0 {w}")
                 wl.setStyleSheet("color: #d29922; font-size: 11px;")
                 self._rec_layout.addWidget(wl)
 
         # -- tier recommendations --
-        _section(self._rec_layout, "Tier Recommendations")
+        _section(self._rec_layout, tr('tactics.tier_recommendations'))
         tier_data = FM24_META.get("tier_recommendations", {}).get(
             self._team_tier, {}
         )
@@ -913,12 +929,12 @@ class TacticsBuilderWidget(QWidget):
                 ts.setStyleSheet("color: #c9d1d9; font-size: 11px;")
                 self._rec_layout.addWidget(ts)
         else:
-            nt = QLabel("No tier-specific recommendations available.")
+            nt = QLabel(tr('tactics.no_tier_recs'))
             nt.setStyleSheet("color: #484f58; font-size: 11px;")
             self._rec_layout.addWidget(nt)
 
         # -- FM24 meta tips --
-        _section(self._rec_layout, "FM24 Meta Tips")
+        _section(self._rec_layout, tr('tactics.meta_tips'))
         for tip in FM24_META.get("engine_tips", []):
             tl = QLabel(f"\u2022 {tip}")
             tl.setWordWrap(True)
@@ -949,8 +965,8 @@ class TacticsBuilderWidget(QWidget):
         _clear_layout(self._league_layout)
 
         league = self._cb_league.currentText()
-        if not league or league == "League":
-            msg = QLabel("Select a league and analyze a squad first.")
+        if not league or league == tr('tactics.league'):
+            msg = QLabel(tr('tactics.select_league'))
             msg.setStyleSheet("color: #8b949e; font-size: 12px; padding: 12px;")
             self._league_layout.addWidget(msg)
             self._league_layout.addStretch()
@@ -1017,7 +1033,7 @@ class TacticsBuilderWidget(QWidget):
             "color: #8b949e; font-size: 10px; font-weight: 700; "
             "padding: 4px 6px; border-bottom: 1px solid #30363d;"
         )
-        for ci, label in enumerate(["ATTRIBUTE", "YOUR AVG", "RANK", "BEST TEAM", "BEST AVG"]):
+        for ci, label in enumerate([tr('tactics.col_attribute'), tr('tactics.col_your_avg'), tr('tactics.col_rank'), tr('tactics.col_best_team'), tr('tactics.col_best_avg')]):
             h = QLabel(label)
             h.setStyleSheet(hdr_style)
             grid.addWidget(h, 0, ci)
@@ -1038,10 +1054,10 @@ class TacticsBuilderWidget(QWidget):
         )
 
         sections = [
-            ("Technical", ATTR_OFFSETS.TECHNICAL_FIELDS),
-            ("Mental", ATTR_OFFSETS.MENTAL_FIELDS),
-            ("Physical", ATTR_OFFSETS.PHYSICAL_FIELDS),
-            ("Goalkeeping", ATTR_OFFSETS.GOALKEEPER_FIELDS),
+            (tr('attr_group.technical'), ATTR_OFFSETS.TECHNICAL_FIELDS),
+            (tr('attr_group.mental'), ATTR_OFFSETS.MENTAL_FIELDS),
+            (tr('attr_group.physical'), ATTR_OFFSETS.PHYSICAL_FIELDS),
+            (tr('attr_group.goalkeeping'), ATTR_OFFSETS.GOALKEEPER_FIELDS),
         ]
 
         ri = 0

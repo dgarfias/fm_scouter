@@ -43,6 +43,8 @@ class Club:
     best_ca: int = 0
     club_ability: float = 0.0
     club_potential: float = 0.0
+    squad_value: int = 0
+    avg_value: int = 0
     league: str = ""
     continent: str = ""
 
@@ -51,7 +53,8 @@ class Club:
         return self.short_name or self.name or "Unknown"
 
 
-def enrich_clubs_with_players(clubs: list["Club"], players: list, game_year: int = 2024):
+def enrich_clubs_with_players(clubs: list["Club"], players: list, game_year: int = 2024,
+                              value_fn=None):
     """Attach squad stats to clubs using player data.
 
     Club ability = avg CA of top 25 players currently at the club
@@ -62,25 +65,59 @@ def enrich_clubs_with_players(clubs: list["Club"], players: list, game_year: int
     """
     from collections import defaultdict
 
-    current_at: dict[str, list] = defaultdict(list)
-    owned_by: dict[str, list] = defaultdict(list)
+    current_at: dict[tuple[str, int | str], list] = defaultdict(list)
+    owned_by: dict[tuple[str, int | str], list] = defaultdict(list)
+
+    club_keys: set[tuple[str, int | str]] = set()
+    unique_name_key: dict[str, tuple[str, int | str] | None] = {}
+    for c in clubs:
+        key = ("addr", c.address) if c.address else ("name", c.name)
+        club_keys.add(key)
+        if not c.name:
+            continue
+        prev = unique_name_key.get(c.name)
+        if prev is None and c.name in unique_name_key:
+            continue
+        if prev is None and c.name not in unique_name_key:
+            unique_name_key[c.name] = key
+        elif prev != key:
+            unique_name_key[c.name] = None
+
+    def _resolve_key(club_name: str, club_addr: int) -> tuple[str, int | str] | None:
+        if club_addr:
+            k = ("addr", club_addr)
+            if k in club_keys:
+                return k
+        if club_name:
+            return unique_name_key.get(club_name)
+        return None
 
     for p in players:
         if not p.club or p.current_ability <= 0:
             continue
-        current_at[p.club].append(p)
-        if getattr(p, "on_loan", False) and getattr(p, "parent_club", ""):
-            owned_by[p.parent_club].append(p)
+        current_key = _resolve_key(
+            getattr(p, "club", "") or "",
+            int(getattr(p, "club_address", 0) or 0),
+        )
+        if current_key is not None:
+            current_at[current_key].append(p)
+
+        if getattr(p, "on_loan", False) and (
+            getattr(p, "parent_club", "") or getattr(p, "parent_club_address", 0)
+        ):
+            owner_key = _resolve_key(
+                getattr(p, "parent_club", "") or "",
+                int(getattr(p, "parent_club_address", 0) or 0),
+            )
         else:
-            owned_by[p.club].append(p)
+            owner_key = current_key
+        if owner_key is not None:
+            owned_by[owner_key].append(p)
 
-    club_by_name: dict[str, "Club"] = {}
     for c in clubs:
-        club_by_name[c.name] = c
-
-    for club_name, c in club_by_name.items():
-        at_club = current_at.get(club_name, [])
-        owned = owned_by.get(club_name, [])
+        club_key = ("addr", c.address) if c.address else ("name", c.name)
+        at_club = current_at.get(club_key, [])
+        owned = owned_by.get(club_key, [])
 
         ability_cas = sorted(
             [p.current_ability for p in at_club],
@@ -110,6 +147,10 @@ def enrich_clubs_with_players(clubs: list["Club"], players: list, game_year: int
         c.club_ability = sum(ability_cas) / 25
         c.club_potential = sum(top_pot) / 25
         c.avg_age = sum(ages) / len(ages) if ages else 0.0
+        if value_fn:
+            player_values = [value_fn(p) for p in at_club]
+            c.squad_value = sum(player_values)
+            c.avg_value = c.squad_value // len(at_club) if at_club else 0
         if at_club:
             c.league = at_club[0].league or ""
             c.continent = getattr(at_club[0], "league_continent", "") or ""

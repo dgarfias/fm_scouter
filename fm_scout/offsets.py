@@ -3,28 +3,28 @@ from dataclasses import dataclass
 @dataclass
 class AttributeOffsets:
     TECHNICAL_FIELDS = (
-        'crossing', 'dribbling', 'finishing', 'heading', 'long_shots',
-        'marking', 'passing', 'penalty_taking', 'tackling',
-        'first_touch', 'technique', 'corners', 'long_throws', 'free_kick_taking',
+        'corners', 'crossing', 'dribbling', 'finishing', 'first_touch',
+        'free_kick_taking', 'heading', 'long_shots', 'long_throws',
+        'marking', 'passing', 'penalty_taking', 'tackling', 'technique',
     )
     MENTAL_FIELDS = (
-        'off_the_ball', 'vision', 'anticipation', 'decisions',
-        'positioning', 'flair', 'teamwork', 'work_rate',
-        'leadership', 'bravery', 'aggression', 'determination',
-        'composure', 'concentration',
+        'aggression', 'anticipation', 'bravery', 'composure',
+        'concentration', 'decisions', 'determination', 'flair',
+        'leadership', 'off_the_ball', 'positioning', 'teamwork',
+        'vision', 'work_rate',
     )
     PHYSICAL_FIELDS = (
-        'acceleration', 'strength', 'stamina', 'pace',
-        'jumping_reach', 'balance', 'agility', 'natural_fitness',
+        'acceleration', 'agility', 'balance', 'jumping_reach',
+        'natural_fitness', 'pace', 'stamina', 'strength',
     )
     GOALKEEPER_FIELDS = (
-        'handling', 'aerial_reach', 'command_of_area', 'communication',
-        'kicking', 'throwing', 'one_on_ones', 'reflexes',
-        'eccentricity', 'rushing_out', 'punching',
+        'aerial_reach', 'command_of_area', 'communication',
+        'eccentricity', 'handling', 'kicking', 'one_on_ones',
+        'punching', 'reflexes', 'rushing_out', 'throwing',
     )
     HIDDEN_FIELDS = (
-        'left_foot', 'right_foot', 'dirtiness', 'consistency',
-        'important_matches', 'injury_proneness', 'versatility',
+        'consistency', 'dirtiness', 'important_matches',
+        'injury_proneness', 'left_foot', 'right_foot', 'versatility',
     )
 
 POSITION_NAMES = (
@@ -55,6 +55,7 @@ class StructOffsets:
     psna: int = 0x60        # surname pointer
     pcna: int = 0x68        # common name pointer
     pnti: int = 0x70        # nationality pointer
+    nation_list_root: int = 0x80  # nationality-list root pointer
     pdob_day: int = 0x44    # date of birth day-of-year (2 bytes)
     pdob_year: int = 0x46   # date of birth year (2 bytes)
     pada: int = 0x78        # personality/hidden attributes (8 bytes)
@@ -80,6 +81,15 @@ class StructOffsets:
     nation_name: int = 0x18             # nation -> name entry pointer
     nation_continent: int = 0xF0        # nation -> continent pointer
     continent_name: int = 0x18          # continent -> name entry pointer
+
+    # Player traits bitfield (on pero object, 8 bytes)
+    pprm: int = 0xF0
+
+    # Legacy secondary nationality chain offsets (kept for compatibility).
+    second_nation_holder: int = 0x140
+    second_nation_ptr: int = 0x48
+    second_nation_ptr_alt1: int = 0xA0
+    second_nation_ptr_alt2: int = 0x128
 
     # Type offsets (from vtable type info)
     player_offset: int = 0x278

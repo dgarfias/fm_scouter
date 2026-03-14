@@ -13,6 +13,51 @@ from .offsets import (
     ATTR_OFFSETS, STRUCT_OFFSETS, POSITION_NAMES, PERSONALITY_NAMES,
     ATTRIBUTE_BYTE_OFFSETS, StructOffsets, AttributeOffsets,
 )
+
+PLAYER_TRAIT_MAP: list[tuple[int, int, str]] = [
+    (0, 0, "Runs With Ball Down Left"),
+    (0, 1, "Runs With Ball Down Right"),
+    (0, 2, "Runs With Ball Down Center"),
+    (0, 3, "Gets Into Opposition Area"),
+    (0, 4, "Moves Into Channels"),
+    (0, 5, "Gets Forward Whenever Possible"),
+    (0, 6, "Plays Short Simple Passes"),
+    (0, 7, "Tries Killer Balls Often"),
+    (1, 0, "Shoots From Distance"),
+    (1, 1, "Shoots With Power"),
+    (1, 2, "Places Shots"),
+    (1, 3, "Curls Ball"),
+    (1, 4, "Likes To Round Keeper"),
+    (1, 5, "Likes To Break Offside Trap"),
+    (1, 6, "Uses Outside Of Foot"),
+    (1, 7, "Marks Opponent Tightly"),
+    (2, 0, "Winds Up Opponents"),
+    (2, 1, "Argues With Officials"),
+    (2, 2, "Plays With Back To Goal"),
+    (2, 3, "Comes Deep To Get Ball"),
+    (2, 4, "Plays One-Twos"),
+    (2, 5, "Likes To Lob Keeper"),
+    (2, 6, "Dictates Tempo"),
+    (2, 7, "Attempts Overhead Kicks"),
+    (3, 0, "Looks For Pass Rather Than Attempting To Score"),
+    (3, 1, "Plays No Through Balls"),
+    (3, 2, "Stops Play"),
+    (3, 3, "Knocks Ball Past Opponent"),
+    (3, 4, "Moves Ball To Right Foot Before Dribble"),
+    (3, 5, "Moves Ball To Left Foot Before Dribble"),
+    (3, 6, "Dwells On Ball"),
+    (3, 7, "Arrives Late In Opponents' Area"),
+    (4, 0, "Tries To Play Way Out Of Trouble"),
+    (4, 1, "Stays Back At All Times"),
+    (4, 2, "Avoids Using Weaker Foot"),
+    (4, 3, "Tries Tricks"),
+    (4, 4, "Tries Long Range Free Kicks"),
+    (4, 5, "Dives Into Tackles"),
+    (5, 0, "Hugs Line"),
+    (5, 6, "Likes To Beat Opponent Repeatedly"),
+    (6, 0, "Shows Onto Weaker Foot"),
+    (7, 0, "Refrains From Taking Long Shots"),
+]
 from .memory import MemoryReader
 
 logger = logging.getLogger('fm_scout')
@@ -125,14 +170,17 @@ class Player:
     current_reputation: int = 0
     world_reputation: int = 0
     nationality: str = ""
+    nationalities: list[str] = field(default_factory=list)
 
     club: str = ""
+    club_address: int = 0
     league: str = ""
     league_nation: str = ""
     league_continent: str = ""
     league_type: int = -1
     on_loan: bool = False
     parent_club: str = ""
+    parent_club_address: int = 0
 
     height: int = 0
     weight: int = 0
@@ -150,6 +198,7 @@ class Player:
     positions: dict[str, int] = field(default_factory=dict)
     attributes: PlayerAttributes = field(default_factory=PlayerAttributes)
     personality: dict[str, int] = field(default_factory=dict)
+    traits: list[str] = field(default_factory=list)
 
     vtable: int = 0
     is_player: bool = True
@@ -159,6 +208,12 @@ class Player:
         if self.common_name:
             return self.common_name
         return f"{self.first_name} {self.last_name}".strip()
+
+    @property
+    def nationality_display(self) -> str:
+        if self.nationalities:
+            return ", ".join(self.nationalities)
+        return self.nationality
 
     @property
     def best_position(self) -> str:
@@ -202,8 +257,10 @@ class Player:
             'ca': self.current_ability,
             'pa': self.potential_ability,
             'club': self.club,
+            'club_address': self.club_address,
             'league': self.league,
             'nationality': self.nationality,
+            'nationalities': list(self.nationalities),
             'birth_year': self.birth_year,
             'birth_day': self.birth_day_of_year,
             'current_reputation': self.current_reputation,
@@ -216,6 +273,7 @@ class Player:
             'best_position': self.best_position,
             'on_loan': self.on_loan,
             'parent_club': self.parent_club,
+            'parent_club_address': self.parent_club_address,
             'transfer_listed': self.transfer_listed,
             'loan_listed': self.loan_listed,
             'contract_expiry': self.contract_expiry,
@@ -239,6 +297,13 @@ class PlayerReader:
     _CONTRACT_READ_SIZE = 0x60
     _NAME_BUF_SIZE = 96
     _NATION_NAME_BUF_SIZE = 64
+    # Nationality list entries live in the leading qwords of the list node.
+    # Scanning deeper pulls unrelated linked metadata (false positives).
+    _NATION_LIST_SCAN_SIZE = 0x80
+    _KNOWN_CONTINENTS = {
+        "Europe", "Africa", "Asia",
+        "South America", "North America", "Oceania",
+    }
 
     def __init__(self, reader: MemoryReader, struct_offsets: StructOffsets,
                  attr_offsets: AttributeOffsets = ATTR_OFFSETS):
@@ -311,18 +376,31 @@ class PlayerReader:
         result = self._parse_combined_py(combined, player)
         if result is None:
             return None
-        contract_ptr, loan_ptr, fna_ptr, sna_ptr, cna_ptr, nti_ptr = result
+        contract_ptr, loan_ptr, fna_ptr, sna_ptr, cna_ptr, nti_ptr, nation_list_root_ptr = result
 
         player.first_name = self._resolve_name(fna_ptr)
         player.last_name = self._resolve_name(sna_ptr)
         player.common_name = self._resolve_name(cna_ptr)
-        player.nationality = self._resolve_nation(nti_ptr)
+        primary_nation = self._resolve_nation(nti_ptr)
+        player.nationality = primary_nation
+        nations: list[str] = []
+        if primary_nation:
+            nations.append(primary_nation)
+        for n_ptr in self._resolve_nation_ptrs_from_root(nation_list_root_ptr):
+            n_name = self._resolve_nation(n_ptr)
+            if not n_name:
+                continue
+            if n_name not in nations:
+                nations.append(n_name)
+        player.nationalities = nations or ([primary_nation] if primary_nation else [])
 
         if contract_ptr:
             self._read_contract(player, contract_ptr)
 
         if loan_ptr:
             self._resolve_loan(player, loan_ptr)
+
+        self._read_traits(player)
 
         return player
 
@@ -424,7 +502,7 @@ class PlayerReader:
             if result is None:
                 continue
 
-            contract_ptr, loan_ptr, fna_ptr, sna_ptr, cna_ptr, nti_ptr = result
+            contract_ptr, loan_ptr, fna_ptr, sna_ptr, cna_ptr, nti_ptr, nation_list_root_ptr = result
             for p in (fna_ptr, sna_ptr, cna_ptr):
                 if p and p not in name_cache:
                     name_ptrs_needed.add(p)
@@ -433,7 +511,7 @@ class PlayerReader:
 
             parsed.append((
                 player, contract_ptr, loan_ptr,
-                fna_ptr, sna_ptr, cna_ptr, nti_ptr,
+                fna_ptr, sna_ptr, cna_ptr, nti_ptr, nation_list_root_ptr,
             ))
 
         # Batch resolve all names and nationalities
@@ -442,12 +520,63 @@ class PlayerReader:
         if nation_ptrs_needed:
             self._batch_resolve_nations(nation_ptrs_needed)
 
+        # Batch-resolve extra nationalities from nation-list roots.
+        sec_ptrs_by_person: dict[int, list[int]] = {}
+        sec_ptrs_needed: set[int] = set()
+        if parsed:
+            root_child_addr_set: set[int] = set()
+            person_root: dict[int, int] = {}
+            for player, _, _, _, _, _, _, root_ptr in parsed:
+                person_root[player.address] = root_ptr or 0
+                if root_ptr:
+                    root_child_addr_set.add(root_ptr)
+
+            root_child_map = dict(reader.batch_read_u64(list(root_child_addr_set))) if root_child_addr_set else {}
+            child_ptrs: list[int] = []
+            for root_ptr in person_root.values():
+                child = root_child_map.get(root_ptr, 0)
+                if child:
+                    child_ptrs.append(child)
+
+            child_blobs = reader.batch_read_fixed(
+                list(set(child_ptrs)),
+                self._NATION_LIST_SCAN_SIZE,
+            ) if child_ptrs else {}
+
+            for player, _, _, _, _, _, _, root_ptr in parsed:
+                child = root_child_map.get(root_ptr, 0) if root_ptr else 0
+                if not child:
+                    continue
+                blob = child_blobs.get(child)
+                if not blob:
+                    continue
+                ptrs = self._extract_nation_ptrs_from_blob(blob)
+                if ptrs:
+                    sec_ptrs_by_person[player.address] = ptrs
+                    for ptr in ptrs:
+                        if ptr not in nation_cache:
+                            sec_ptrs_needed.add(ptr)
+
+        if sec_ptrs_needed:
+            self._batch_resolve_nations(sec_ptrs_needed)
+
         # Assign resolved names and build pending list
-        for player, contract_ptr, loan_ptr, fna, sna, cna, nti in parsed:
+        for player, contract_ptr, loan_ptr, fna, sna, cna, nti, _root in parsed:
             player.first_name = name_cache.get(fna, "")
             player.last_name = name_cache.get(sna, "")
             player.common_name = name_cache.get(cna, "")
-            player.nationality = nation_cache.get(nti, "")
+            primary_nation = nation_cache.get(nti, "")
+            player.nationality = primary_nation
+            nations: list[str] = []
+            if primary_nation:
+                nations.append(primary_nation)
+            for n_ptr in sec_ptrs_by_person.get(player.address, []):
+                n_name = nation_cache.get(n_ptr, "")
+                if not n_name:
+                    continue
+                if n_name not in nations:
+                    nations.append(n_name)
+            player.nationalities = nations or ([primary_nation] if primary_nation else [])
             pending.append((player, contract_ptr, loan_ptr))
 
         logger.debug("Phase 3: %d players parsed", len(pending))
@@ -487,6 +616,8 @@ class PlayerReader:
             if loan_ptr:
                 self._resolve_loan(player, loan_ptr)
 
+            self._read_traits(player)
+
             players.append(player)
 
         logger.info(
@@ -501,11 +632,11 @@ class PlayerReader:
 
     def _parse_combined_py(
         self, combined: bytes, player: Player,
-    ) -> Optional[tuple[int, int, int, int, int, int]]:
+    ) -> Optional[tuple[int, int, int, int, int, int, int]]:
         """Parse combined pero+plao bytes in pure Python.
 
         Populates scalar fields on *player* and returns a tuple of
-        ``(contract_ptr, loan_ptr, fna_ptr, sna_ptr, cna_ptr, nti_ptr)``
+        ``(contract_ptr, loan_ptr, fna_ptr, sna_ptr, cna_ptr, nti_ptr, nation_list_root_ptr)``
         for deferred name/contract resolution, or ``None`` on failure.
         """
         so = self.so
@@ -571,6 +702,7 @@ class PlayerReader:
         sna_ptr = struct.unpack_from('<Q', combined, pero + so.psna)[0]
         cna_ptr = struct.unpack_from('<Q', combined, pero + so.pcna)[0]
         nti_ptr = struct.unpack_from('<Q', combined, pero + so.pnti)[0]
+        nation_list_root_ptr = struct.unpack_from('<Q', combined, pero + so.nation_list_root)[0]
 
         # Contract pointer
         contract_ptr = struct.unpack_from('<Q', combined, pero + so.pcontract)[0]
@@ -581,7 +713,10 @@ class PlayerReader:
         if loan_off + 8 <= len(combined):
             loan_ptr = struct.unpack_from('<Q', combined, loan_off)[0]
 
-        return contract_ptr, loan_ptr, fna_ptr, sna_ptr, cna_ptr, nti_ptr
+        return (
+            contract_ptr, loan_ptr, fna_ptr, sna_ptr, cna_ptr, nti_ptr,
+            nation_list_root_ptr,
+        )
 
     @staticmethod
     def _normalize_ability(val: int) -> int:
@@ -652,8 +787,8 @@ class PlayerReader:
     def _batch_resolve_nations(self, ptrs: set[int]):
         """Batch-read nationality objects and populate the nation cache.
 
-        Two-phase: first read the name-entry pointer from each nation
-        object, then batch-read the actual name strings.
+        Resolves country names from nation objects and validates they are
+        true nations by requiring a valid continent chain.
         """
         if not ptrs:
             return
@@ -662,28 +797,35 @@ class PlayerReader:
         cache = self._nation_cache
         so = self.so
 
-        # Phase A: batch read nation -> name_entry pointers
+        # Phase A: batch read nation -> (name_entry, continent_ptr)
         nation_addrs = [p + so.nation_name for p in ptrs]
         entry_bufs = reader.batch_read_fixed(nation_addrs, 8)
+        cont_addrs = [p + so.nation_continent for p in ptrs]
+        cont_ptr_bufs = reader.batch_read_fixed(cont_addrs, 8)
 
         name_entry_map: dict[int, int] = {}
-        string_read_addrs: list[int] = []
+        cont_ptr_map: dict[int, int] = {}
+        nation_string_addrs: list[int] = []
 
         for ptr in ptrs:
-            buf = entry_bufs.get(ptr + so.nation_name)
-            if buf and len(buf) == 8:
-                name_entry = struct.unpack('<Q', buf)[0]
-                if name_entry:
-                    name_entry_map[ptr] = name_entry
-                    string_read_addrs.append(name_entry + 4)
-                    continue
-            cache[ptr] = ""
+            nbuf = entry_bufs.get(ptr + so.nation_name)
+            cbuf = cont_ptr_bufs.get(ptr + so.nation_continent)
+            name_entry = struct.unpack('<Q', nbuf)[0] if nbuf and len(nbuf) == 8 else 0
+            cont_ptr = struct.unpack('<Q', cbuf)[0] if cbuf and len(cbuf) == 8 else 0
+            if name_entry and cont_ptr:
+                name_entry_map[ptr] = name_entry
+                cont_ptr_map[ptr] = cont_ptr
+                nation_string_addrs.append(name_entry + 4)
+            else:
+                cache[ptr] = ""
 
-        if not string_read_addrs:
+        if not nation_string_addrs:
             return
 
-        # Phase B: batch read name-entry heads and direct string regions.
-        string_bufs = reader.batch_read_fixed(string_read_addrs, self._NATION_NAME_BUF_SIZE)
+        # Phase B: decode nation names.
+        nation_string_bufs = reader.batch_read_fixed(
+            nation_string_addrs, self._NATION_NAME_BUF_SIZE,
+        )
         head_ptrs = dict(reader.batch_read_u64(list(name_entry_map.values())))
         indirect_addrs = [q + 4 for q in head_ptrs.values() if q]
         indirect_bufs = (
@@ -691,17 +833,60 @@ class PlayerReader:
             if indirect_addrs
             else {}
         )
-
-        for ptr, name_entry in name_entry_map.items():
+        nation_name_by_entry: dict[int, str] = {}
+        for name_entry in set(name_entry_map.values()):
             nation = ""
             head = head_ptrs.get(name_entry, 0)
             if head:
                 raw = indirect_bufs.get(head + 4)
                 nation = self._parse_string_buf(raw) if raw else ""
             if not nation:
-                raw = string_bufs.get(name_entry + 4)
+                raw = nation_string_bufs.get(name_entry + 4)
                 nation = self._parse_string_buf(raw) if raw else ""
-            cache[ptr] = nation
+            nation_name_by_entry[name_entry] = nation
+
+        # Phase C: decode continent names and validate nation pointers.
+        unique_cont_ptrs = set(cont_ptr_map.values())
+        cont_name_entry_addrs = [cp + so.continent_name for cp in unique_cont_ptrs]
+        cont_entry_bufs = reader.batch_read_fixed(cont_name_entry_addrs, 8)
+        cont_name_entry_by_ptr: dict[int, int] = {}
+        cont_string_addrs: list[int] = []
+        for cp in unique_cont_ptrs:
+            buf = cont_entry_bufs.get(cp + so.continent_name)
+            entry = struct.unpack('<Q', buf)[0] if buf and len(buf) == 8 else 0
+            if entry:
+                cont_name_entry_by_ptr[cp] = entry
+                cont_string_addrs.append(entry + 4)
+
+        cont_string_bufs = reader.batch_read_fixed(
+            cont_string_addrs, self._NATION_NAME_BUF_SIZE,
+        ) if cont_string_addrs else {}
+        cont_head_ptrs = dict(
+            reader.batch_read_u64(list(cont_name_entry_by_ptr.values()))
+        ) if cont_name_entry_by_ptr else {}
+        cont_indirect_addrs = [q + 4 for q in cont_head_ptrs.values() if q]
+        cont_indirect_bufs = (
+            reader.batch_read_fixed(cont_indirect_addrs, self._NATION_NAME_BUF_SIZE)
+            if cont_indirect_addrs
+            else {}
+        )
+        continent_by_ptr: dict[int, str] = {}
+        for cp, entry in cont_name_entry_by_ptr.items():
+            cont = ""
+            head = cont_head_ptrs.get(entry, 0)
+            if head:
+                raw = cont_indirect_bufs.get(head + 4)
+                cont = self._parse_string_buf(raw) if raw else ""
+            if not cont:
+                raw = cont_string_bufs.get(entry + 4)
+                cont = self._parse_string_buf(raw) if raw else ""
+            continent_by_ptr[cp] = cont if cont in self._KNOWN_CONTINENTS else ""
+
+        for ptr, name_entry in name_entry_map.items():
+            if not continent_by_ptr.get(cont_ptr_map.get(ptr, 0), ""):
+                cache[ptr] = ""
+                continue
+            cache[ptr] = nation_name_by_entry.get(name_entry, "")
 
     # ------------------------------------------------------------------ #
     #  Individual name / nationality resolution (for single-player path)  #
@@ -734,9 +919,11 @@ class PlayerReader:
         cached = self._nation_cache.get(ptr)
         if cached is not None:
             return cached
+
         name_entry = self.reader.read_pointer(ptr + self.so.nation_name)
+        cont_ptr = self.reader.read_pointer(ptr + self.so.nation_continent)
         nation = ""
-        if name_entry:
+        if name_entry and cont_ptr:
             s = self.reader.read_string(name_entry + 4, max_len=self._NATION_NAME_BUF_SIZE)
             if s and s.isprintable():
                 nation = s
@@ -746,8 +933,56 @@ class PlayerReader:
                     s2 = self.reader.read_string(head + 4, max_len=self._NATION_NAME_BUF_SIZE)
                     if s2 and s2.isprintable():
                         nation = s2
+            # Strict validation: continent must resolve to a known continent.
+            if nation:
+                cont_name_entry = self.reader.read_pointer(cont_ptr + self.so.continent_name)
+                continent = ""
+                if cont_name_entry:
+                    c = self.reader.read_string(
+                        cont_name_entry + 4, max_len=self._NATION_NAME_BUF_SIZE,
+                    )
+                    if c and c.isprintable():
+                        continent = c
+                    if not continent:
+                        chead = self.reader.read_pointer(cont_name_entry)
+                        if chead:
+                            c2 = self.reader.read_string(
+                                chead + 4, max_len=self._NATION_NAME_BUF_SIZE,
+                            )
+                            if c2 and c2.isprintable():
+                                continent = c2
+                if continent not in self._KNOWN_CONTINENTS:
+                    nation = ""
         self._nation_cache[ptr] = nation
         return nation
+
+    @staticmethod
+    def _extract_nation_ptrs_from_blob(blob: bytes) -> list[int]:
+        counts: dict[int, int] = {}
+        first_off: dict[int, int] = {}
+        for off in range(0, len(blob) - 7, 8):
+            ptr = struct.unpack_from('<Q', blob, off)[0]
+            if not ptr or ptr < 0x10000 or ptr > 0x7FFFFFFFFFFF:
+                continue
+            counts[ptr] = counts.get(ptr, 0) + 1
+            if ptr not in first_off:
+                first_off[ptr] = off
+        return sorted(
+            counts.keys(),
+            key=lambda p: (-counts[p], first_off[p]),
+        )
+
+    def _resolve_nation_ptrs_from_root(self, nation_list_root_ptr: int) -> list[int]:
+        """Resolve additional nationality pointers from nation-list root."""
+        if not nation_list_root_ptr:
+            return []
+        list_node_ptr = self.reader.read_pointer(nation_list_root_ptr)
+        if not list_node_ptr:
+            return []
+        blob = self.reader.read_bytes(list_node_ptr, self._NATION_LIST_SCAN_SIZE)
+        if not blob or len(blob) < 8:
+            return []
+        return self._extract_nation_ptrs_from_blob(blob)
 
     # ------------------------------------------------------------------ #
     #  Contract parsing                                                   #
@@ -798,6 +1033,21 @@ class PlayerReader:
         player.loan_listed = available_for_loan and (not unavailable_for_loan)
 
     # ------------------------------------------------------------------ #
+    #  Player traits                                                      #
+    # ------------------------------------------------------------------ #
+
+    def _read_traits(self, player: Player):
+        """Read player trait bitfield from person address + pprm offset."""
+        data = self.reader.read_bytes(player.address + self.so.pprm, 8)
+        if not data or len(data) < 8:
+            return
+        traits: list[str] = []
+        for byte_off, bit_idx, name in PLAYER_TRAIT_MAP:
+            if byte_off < len(data) and data[byte_off] & (1 << bit_idx):
+                traits.append(name)
+        player.traits = traits
+
+    # ------------------------------------------------------------------ #
     #  Club / league chain resolution                                     #
     # ------------------------------------------------------------------ #
 
@@ -812,11 +1062,12 @@ class PlayerReader:
 
         cached = self._club_cache.get(team_ptr)
         if cached is not None:
-            player.club = cached[0]
-            player.league = cached[1]
-            player.league_nation = cached[2]
-            player.league_continent = cached[3]
-            player.league_type = cached[4]
+            player.club_address = cached[0]
+            player.club = cached[1]
+            player.league = cached[2]
+            player.league_nation = cached[3]
+            player.league_continent = cached[4]
+            player.league_type = cached[5]
             return
 
         reader = self.reader
@@ -875,8 +1126,9 @@ class PlayerReader:
                         if s and s.isprintable():
                             league_continent = s
 
-        result = (club_name, league_name, league_nation, league_continent, league_type)
+        result = (club_ptr or 0, club_name, league_name, league_nation, league_continent, league_type)
         self._club_cache[team_ptr] = result
+        player.club_address = club_ptr or 0
         player.club = club_name
         player.league = league_name
         player.league_nation = league_nation
@@ -912,6 +1164,7 @@ class PlayerReader:
         loan_team = struct.unpack_from('<Q', ldata, c_team)[0]
         if loan_team:
             player.parent_club = player.club
+            player.parent_club_address = player.club_address
             self._resolve_club_chain(player, loan_team)
             player.on_loan = True
 

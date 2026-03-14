@@ -2,6 +2,7 @@
 __pycache__/
 *.py[cod]
 *$py.class
+.pytest_cache/
 
 # Cython generated files
 fm_scout/_parser.c

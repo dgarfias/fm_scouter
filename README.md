@@ -10,9 +10,10 @@ FM Scout reads your save game directly from memory while FM24 is running, giving
 - **Player Profiles** — Detailed view of any player including attributes, positions (with pitch diagram), personality traits, contract info, and estimated value.
 - **Club Viewer** — Overview of every club with squad stats, average ability, and league information.
 - **Tactics Builder** — Select a formation and squad, then get a best XI recommendation with role/duty assignments, squad gap analysis, and style recommendations.
-- **My Club** — Automatically detects your current save's manager and club from memory.
+- **League Comparison** — Compare your squad's attribute averages against every team in the league, with rankings per attribute.
 - **Shortlist** — Mark players of interest and track them separately.
 - **CSV Export** — Export player data for use in spreadsheets or other tools.
+- **Multi-language** — English and Spanish included. Easy to add more languages.
 
 ## Requirements
 
@@ -44,9 +45,12 @@ FM Scout reads the running FM24 process memory to locate game data structures �
 
 Your save game is **never modified** — FM Scout is strictly read-only.
 
-## Screenshots
+## Adding a New Language
 
-*Coming soon*
+1. Copy `locale/en.json` to `locale/xx.json` (where `xx` is the language code, e.g. `fr`, `de`, `pt`).
+2. Translate all the string values in the new file.
+3. Add the language name to the `"language"` section in both `en.json` and your new file.
+4. Restart the app — the new language appears in the dropdown.
 
 ## License
 

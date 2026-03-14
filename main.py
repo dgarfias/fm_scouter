@@ -5,6 +5,7 @@ import os
 import sys
 import csv
 import signal
+import unicodedata
 from datetime import date, timedelta
 from typing import Optional
 
@@ -30,6 +31,7 @@ from fm_scout.player import PlayerReader, Player, PlayerAttributes
 from fm_scout.tactics_ui import TacticsBuilderWidget
 from fm_scout.club_ui import ClubViewerWidget
 from fm_scout.club import ClubReader, enrich_clubs_with_players
+from fm_scout.locale import tr
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(name)s: %(message)s')
 logger = logging.getLogger('fm_scout')
@@ -49,119 +51,20 @@ ATTR_COLUMNS = (
 
 PERSONALITY_COLS = [f"pers_{name.lower()}" for name in PERSONALITY_NAMES]
 
-SHORT_NAMES = {
-    'crossing':         'Cro',
-    'dribbling':        'Dri',
-    'finishing':        'Fin',
-    'heading':          'Hea',
-    'long_shots':       'Lon',
-    'marking':          'Mar',
-    'passing':          'Pas',
-    'penalty_taking':   'Pen',
-    'tackling':         'Tck',
-    'first_touch':      'Fir',
-    'technique':        'Tec',
-    'corners':          'Cor',
-    'long_throws':      'LTh',
-    'free_kick_taking': 'Fre',
-    'off_the_ball':     'OtB',
-    'vision':           'Vis',
-    'anticipation':     'Ant',
-    'decisions':        'Dec',
-    'positioning':      'Pos',
-    'flair':            'Fla',
-    'teamwork':         'Tea',
-    'work_rate':        'Wor',
-    'leadership':       'Ldr',
-    'bravery':          'Bra',
-    'aggression':       'Agg',
-    'determination':    'Det',
-    'composure':        'Cmp',
-    'concentration':    'Cnt',
-    'acceleration':     'Acc',
-    'strength':         'Str',
-    'stamina':          'Sta',
-    'pace':             'Pac',
-    'jumping_reach':    'Jum',
-    'balance':          'Bal',
-    'agility':          'Agi',
-    'natural_fitness':  'Nat',
-    'handling':         'Han',
-    'aerial_reach':     'Aer',
-    'command_of_area':  'Cmd',
-    'communication':    'Com',
-    'kicking':          'Kic',
-    'throwing':         'Thr',
-    'one_on_ones':      '1v1',
-    'reflexes':         'Ref',
-    'eccentricity':     'Ecc',
-    'rushing_out':      'Rus',
-    'punching':         'Pun',
-    'left_foot':        'LFt',
-    'right_foot':       'RFt',
-    'dirtiness':        'Dir',
-    'consistency':      'Con',
-    'important_matches': 'Imp',
-    'injury_proneness': 'Inj',
-    'versatility':      'Ver',
-}
+def _build_short_names() -> dict[str, str]:
+    all_attrs = (ATTR_OFFSETS.TECHNICAL_FIELDS + ATTR_OFFSETS.MENTAL_FIELDS
+                 + ATTR_OFFSETS.PHYSICAL_FIELDS + ATTR_OFFSETS.GOALKEEPER_FIELDS
+                 + ATTR_OFFSETS.HIDDEN_FIELDS)
+    return {a: tr(f"attr_short.{a}") for a in all_attrs}
 
-FULL_NAMES = {
-    'crossing':         'Crossing',
-    'dribbling':        'Dribbling',
-    'finishing':        'Finishing',
-    'heading':          'Heading',
-    'long_shots':       'Long Shots',
-    'marking':          'Marking',
-    'passing':          'Passing',
-    'penalty_taking':   'Penalty Taking',
-    'tackling':         'Tackling',
-    'first_touch':      'First Touch',
-    'technique':        'Technique',
-    'corners':          'Corners',
-    'long_throws':      'Long Throws',
-    'free_kick_taking': 'Free Kick Taking',
-    'off_the_ball':     'Off The Ball',
-    'vision':           'Vision',
-    'anticipation':     'Anticipation',
-    'decisions':        'Decisions',
-    'positioning':      'Positioning',
-    'flair':            'Flair',
-    'teamwork':         'Teamwork',
-    'work_rate':        'Work Rate',
-    'leadership':       'Leadership',
-    'bravery':          'Bravery',
-    'aggression':       'Aggression',
-    'determination':    'Determination',
-    'composure':        'Composure',
-    'concentration':    'Concentration',
-    'acceleration':     'Acceleration',
-    'strength':         'Strength',
-    'stamina':          'Stamina',
-    'pace':             'Pace',
-    'jumping_reach':    'Jumping Reach',
-    'balance':          'Balance',
-    'agility':          'Agility',
-    'natural_fitness':  'Natural Fitness',
-    'handling':         'Handling',
-    'aerial_reach':     'Aerial Reach',
-    'command_of_area':  'Command of Area',
-    'communication':    'Communication',
-    'kicking':          'Kicking',
-    'throwing':         'Throwing',
-    'one_on_ones':      'One on Ones',
-    'reflexes':         'Reflexes',
-    'eccentricity':     'Eccentricity',
-    'rushing_out':      'Rushing Out',
-    'punching':         'Punching',
-    'left_foot':        'Left Foot',
-    'right_foot':       'Right Foot',
-    'dirtiness':        'Dirtiness',
-    'consistency':      'Consistency',
-    'important_matches': 'Important Matches',
-    'injury_proneness': 'Injury Proneness',
-    'versatility':      'Versatility',
-}
+def _build_full_names() -> dict[str, str]:
+    all_attrs = (ATTR_OFFSETS.TECHNICAL_FIELDS + ATTR_OFFSETS.MENTAL_FIELDS
+                 + ATTR_OFFSETS.PHYSICAL_FIELDS + ATTR_OFFSETS.GOALKEEPER_FIELDS
+                 + ATTR_OFFSETS.HIDDEN_FIELDS)
+    return {a: tr(f"attr.{a}") for a in all_attrs}
+
+SHORT_NAMES = _build_short_names()
+FULL_NAMES = _build_full_names()
 
 CONTRACT_EXTRA_COLS = [
     'transfer_listed', 'loan_listed', 'on_loan', 'parent_club', 'league',
@@ -187,43 +90,36 @@ DEFAULT_HIDDEN_COLS = set(TABLE_COLS) - set(DEFAULT_VISIBLE_COLS)
 
 TABLE_LAYOUT_VERSION = 6
 
-# Short header labels for table columns
-COL_HEADERS = {
-    'name': 'Name',     'club': 'Club',      'nationality': 'Nat',
-    'age': 'Age',       'best_pos': 'Pos',    'est_value': 'Value',
-    'wage': 'Wage',     'ca': 'CA',           'pa': 'PA',
-    'reputation': 'Rep',
-    'transfer_listed': 'TL',       'loan_listed': 'LL',
-    'on_loan': 'Loan',             'parent_club': 'Parent',
-    'league': 'League',            'contract_expiry': 'Exp',
-    'contract_transfer_opts': 'TrOpt',
-    'contract_option_years': 'OptY',
-    'listed_reason': 'Reason',
-}
-for _a in ATTR_COLUMNS:
-    COL_HEADERS[_a] = SHORT_NAMES[_a]
-for _pc in PERSONALITY_COLS:
-    COL_HEADERS[_pc] = _pc[5:].title()[:4]
+def _build_col_headers() -> dict[str, str]:
+    h: dict[str, str] = {}
+    for col in ('name', 'club', 'nationality', 'age', 'best_pos',
+                'est_value', 'wage', 'ca', 'pa', 'reputation',
+                'transfer_listed', 'loan_listed', 'on_loan', 'parent_club',
+                'league', 'contract_expiry', 'contract_transfer_opts',
+                'contract_option_years', 'listed_reason'):
+        h[col] = tr(f"column.{col}")
+    for a in ATTR_COLUMNS:
+        h[a] = SHORT_NAMES[a]
+    for pc in PERSONALITY_COLS:
+        h[pc] = pc[5:].title()[:4]
+    return h
 
-# Full header labels for menus
-MENU_HEADERS = {
-    'name': 'Name',                 'club': 'Club',
-    'nationality': 'Nationality',   'age': 'Age',
-    'best_pos': 'Best Position',    'est_value': 'Estimated Value',
-    'wage': 'Wage',                 'ca': 'Current Ability',
-    'pa': 'Potential Ability',      'reputation': 'Reputation',
-    'transfer_listed': 'Transfer Listed',
-    'loan_listed': 'Loan Listed',   'on_loan': 'On Loan',
-    'parent_club': 'Parent Club',   'league': 'League',
-    'contract_expiry': 'Contract Expiry',
-    'contract_transfer_opts': 'Transfer Options',
-    'contract_option_years': 'Option Years',
-    'listed_reason': 'Listed Reason',
-}
-for _a in ATTR_COLUMNS:
-    MENU_HEADERS[_a] = FULL_NAMES[_a]
-for _pc in PERSONALITY_COLS:
-    MENU_HEADERS[_pc] = _pc[5:].replace('_', ' ').title()
+def _build_menu_headers() -> dict[str, str]:
+    h: dict[str, str] = {}
+    for col in ('name', 'club', 'nationality', 'age', 'best_pos',
+                'est_value', 'wage', 'ca', 'pa', 'reputation',
+                'transfer_listed', 'loan_listed', 'on_loan', 'parent_club',
+                'league', 'contract_expiry', 'contract_transfer_opts',
+                'contract_option_years', 'listed_reason'):
+        h[col] = tr(f"column_full.{col}")
+    for a in ATTR_COLUMNS:
+        h[a] = FULL_NAMES[a]
+    for pc in PERSONALITY_COLS:
+        h[pc] = pc[5:].replace('_', ' ').title()
+    return h
+
+COL_HEADERS = _build_col_headers()
+MENU_HEADERS = _build_menu_headers()
 
 
 # ---------------------------------------------------------------------------
@@ -234,18 +130,12 @@ GAME_YEAR = 0
 GAME_DAY = 0
 
 # Estimated value model coefficients
-EST_BASE_SCALE = 5_000_000
-EST_CA_EXP = 3.0
-EST_PA_WEIGHT = 0.8
-EST_AGE_PEAK = 27
-EST_AGE_DECAY = 0.06
 EST_POS_MULTIPLIERS = {
-    'ST': 1.25, 'AMC': 1.15, 'AML': 1.10, 'AMR': 1.10,
-    'MC': 1.00, 'ML': 0.95, 'MR': 0.95, 'DM': 0.95,
-    'DC': 0.90, 'DL': 0.85, 'DR': 0.85,
-    'WBL': 0.85, 'WBR': 0.85, 'GK': 0.70,
+    'ST': 1.30, 'AMC': 1.20, 'AML': 1.15, 'AMR': 1.15,
+    'MC': 1.00, 'ML': 0.95, 'MR': 0.95, 'DM': 0.90,
+    'DC': 0.85, 'DL': 0.80, 'DR': 0.80,
+    'WBL': 0.80, 'WBR': 0.80, 'GK': 0.65,
 }
-GBP_TO_EUR = 1.17
 
 
 # ---------------------------------------------------------------------------
@@ -549,36 +439,55 @@ def _estimated_player_value(player) -> int:
 
     pa = player.potential_ability or ca
     age = _player_age(player)
-    rep = player.reputation or 0
+    rep = getattr(player, 'current_reputation', 0) or player.reputation or 0
+    wrep = getattr(player, 'world_reputation', 0) or 0
     pos = getattr(player, 'best_position', '') or ''
 
-    base = EST_BASE_SCALE * (ca / 100) ** EST_CA_EXP
+    base = 5.0 * (ca ** 3.39)
 
-    if pa > ca and age < EST_AGE_PEAK:
-        potential_ratio = pa / max(ca, 1)
-        youth_factor = max(0, EST_AGE_PEAK - age) / 12
-        base *= 1 + EST_PA_WEIGHT * (potential_ratio - 1) * youth_factor
+    if pa > ca and age < 28:
+        growth = pa - ca
+        youth = max(0, 28 - age) / 10.0
+        base *= 1 + min(2.5, growth * 0.035 * youth)
 
-    if age > EST_AGE_PEAK:
-        decay = EST_AGE_DECAY * (age - EST_AGE_PEAK) ** 1.3
-        base *= max(0.05, 1 - decay)
-    elif age < 22:
-        base *= 0.7 + 0.3 * max(0, age - 15) / 7
+    if 25 <= age <= 27:
+        base *= 1.15
+    elif 28 <= age <= 29:
+        base *= 1.0
+    elif age == 30:
+        base *= 0.75
+    elif age == 31:
+        base *= 0.55
+    elif age == 32:
+        base *= 0.40
+    elif age == 33:
+        base *= 0.30
+    elif age >= 34:
+        base *= max(0.05, 0.20 - 0.05 * (age - 34))
+    elif 22 <= age < 25:
+        base *= 1.0
+    elif 20 <= age < 22:
+        base *= 0.80
+    elif 18 <= age < 20:
+        base *= 0.55
+    elif age < 18:
+        base *= 0.35
 
-    if rep > 0:
-        rep_factor = (rep / 10000) ** 0.6
-        base *= 0.6 + 0.4 * rep_factor
+    effective_rep = max(wrep, rep * 0.5) if wrep > 0 else rep
+    if effective_rep > 0:
+        rn = min(effective_rep / 10000, 1.0)
+        base *= 0.02 + 0.98 * (rn ** 1.5)
     else:
-        base *= 0.5
+        base *= 0.02
 
-    pos_mult = EST_POS_MULTIPLIERS.get(pos, 1.0)
-    base *= pos_mult
+    base *= EST_POS_MULTIPLIERS.get(pos, 1.0)
 
-    return max(0, int(base * GBP_TO_EUR))
+    return max(0, int(base))
 
 
 _COL_PLAYER_MAP = {
     'name': 'display_name',
+    'nationality': 'nationality_display',
     'best_pos': 'position_str',
     'ca': 'current_ability',
     'pa': 'potential_ability',
@@ -599,9 +508,9 @@ def _col_value(player, col_name: str):
 # ---------------------------------------------------------------------------
 
 _BADGE_DEFS = [
-    ("on_loan",         "LND", QColor(210, 153, 34)),    # yellow
-    ("transfer_listed", "TRF", QColor(248, 81, 73)),     # red
-    ("loan_listed",     "LDS", QColor(63, 185, 80)),     # green
+    ("on_loan",         tr('badge.on_loan'), QColor(210, 153, 34)),    # yellow
+    ("transfer_listed", tr('badge.transfer_listed'), QColor(248, 81, 73)),     # red
+    ("loan_listed",     tr('badge.loan_listed'), QColor(63, 185, 80)),     # green
 ]
 
 
@@ -879,25 +788,25 @@ class ScanWorker(QThread):
     error = pyqtSignal(str)
 
     def run(self):
+        reader = None
         try:
-            self.progress.emit(0, 100, 'Finding FM process…')
+            self.progress.emit(0, 100, tr('msg.finding_process'))
             proc = find_fm_process()
             if proc is None:
-                self.error.emit(
-                    'FM24 process not found. Is the game running?')
+                self.error.emit(tr('msg.no_process'))
                 return
 
-            self.progress.emit(10, 100, 'Opening memory reader…')
+            self.progress.emit(10, 100, tr('msg.opening_memory'))
             reader = MemoryReader(proc.pid)
             reader.open()
 
-            self.progress.emit(20, 100, 'Getting memory regions…')
+            self.progress.emit(20, 100, tr('msg.getting_regions'))
             regions = get_memory_regions(proc.pid)
 
-            self.progress.emit(30, 100, 'Scanning game data…')
+            self.progress.emit(30, 100, tr('msg.scanning_data'))
             scanner = GameScanner(reader, regions)
             if not scanner.scan_all():
-                self.error.emit('Failed to locate game data structures.')
+                self.error.emit(tr('msg.scan_failed'))
                 reader.close()
                 return
 
@@ -909,13 +818,13 @@ class ScanWorker(QThread):
                 GAME_YEAR = today.year
                 GAME_DAY = today.timetuple().tm_yday
 
-            self.progress.emit(50, 100, 'Reading players…')
+            self.progress.emit(50, 100, tr('msg.reading_players'))
             player_reader = PlayerReader(reader, STRUCT_OFFSETS)
             player_reader.PLAYER_VTABLES = set(scanner.player_vtables)
             person_ptrs = scanner.get_person_pointers()
             players = player_reader.read_all_players(person_ptrs)
 
-            self.progress.emit(70, 100, 'Reading clubs…')
+            self.progress.emit(70, 100, tr('msg.reading_clubs'))
             club_reader = ClubReader(reader, scanner.pointers.dbt_root)
             clubs = club_reader.read_all_clubs()
             my_club_name = (
@@ -924,11 +833,13 @@ class ScanWorker(QThread):
                 or ""
             )
 
-            self.progress.emit(85, 100, 'Enriching club data…')
-            enrich_clubs_with_players(clubs, players, GAME_YEAR)
+            self.progress.emit(85, 100, tr('msg.enriching'))
+            enrich_clubs_with_players(clubs, players, GAME_YEAR,
+                                     value_fn=_estimated_player_value)
 
             reader.close()
-            self.progress.emit(100, 100, 'Done!')
+            reader = None
+            self.progress.emit(100, 100, tr('msg.done'))
             self.finished.emit({
                 'players': players,
                 'clubs': clubs,
@@ -938,6 +849,12 @@ class ScanWorker(QThread):
         except Exception as e:
             logger.exception('Scan failed')
             self.error.emit(str(e))
+        finally:
+            if reader is not None:
+                try:
+                    reader.close()
+                except OSError:
+                    pass
 
 
 # ---------------------------------------------------------------------------
@@ -1173,7 +1090,7 @@ class SearchDialog(QDialog):
     def __init__(self, filter_data: dict, current_filters: dict | None = None,
                  parent=None):
         super().__init__(parent)
-        self.setWindowTitle('Player Search')
+        self.setWindowTitle(tr('filter.title'))
         self.setMinimumSize(700, 600)
         self.setStyleSheet(SS_WIDGET + SS_DIALOG)
 
@@ -1195,6 +1112,7 @@ class SearchDialog(QDialog):
         self._build_attr_tab('Personality', PERSONALITY_COLS,
                              label_fn=lambda c: c[5:].replace('_', ' ').title())
         self._build_attr_tab('Hidden', ATTR_OFFSETS.HIDDEN_FIELDS)
+        self._build_traits_tab()
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
@@ -1204,7 +1122,7 @@ class SearchDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         clear_btn = buttons.button(QDialogButtonBox.StandardButton.Reset)
-        clear_btn.setText('Clear All Filters')
+        clear_btn.setText(tr('button.clear_all'))
         clear_btn.clicked.connect(self._clear_all)
         layout.addWidget(buttons)
 
@@ -1218,10 +1136,10 @@ class SearchDialog(QDialog):
         outer.setContentsMargins(8, 8, 8, 8)
 
         name_row = QHBoxLayout()
-        name_label = QLabel('Name:')
+        name_label = QLabel(tr('filter.name'))
         name_label.setStyleSheet('color: #f0f6fc; font-size: 12px; font-weight: 600;')
         self._name_edit = QLineEdit()
-        self._name_edit.setPlaceholderText('Search by player name...')
+        self._name_edit.setPlaceholderText(tr('filter.name_placeholder'))
         name_row.addWidget(name_label)
         name_row.addWidget(self._name_edit, 1)
         outer.addLayout(name_row)
@@ -1229,60 +1147,60 @@ class SearchDialog(QDialog):
         top_row = QHBoxLayout()
 
         # Nationality filter (player's own nationality)
-        nat_group = QGroupBox('Nationality')
+        nat_group = QGroupBox(tr('group.nationality'))
         nat_layout = QFormLayout(nat_group)
         nat_layout.setFieldGrowthPolicy(
             QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
 
         self._nat_continent_combo = QComboBox()
         self._configure_combo_popup(self._nat_continent_combo)
-        self._nat_continent_combo.addItem('Any')
+        self._nat_continent_combo.addItem(tr('filter.any'))
         for c in self._filter_data.get('nat_continents', []):
             self._nat_continent_combo.addItem(c)
         self._nat_continent_combo.currentTextChanged.connect(
             self._on_nat_continent_changed)
-        nat_layout.addRow('Continent:', self._nat_continent_combo)
+        nat_layout.addRow(tr('filter.continent'), self._nat_continent_combo)
 
         self._nat_nation_combo = QComboBox()
         self._configure_combo_popup(self._nat_nation_combo)
-        self._nat_nation_combo.addItem('Any')
-        nat_layout.addRow('Nation:', self._nat_nation_combo)
+        self._nat_nation_combo.addItem(tr('filter.any'))
+        nat_layout.addRow(tr('filter.nation'), self._nat_nation_combo)
 
         top_row.addWidget(nat_group)
 
         # Club location filter (league geography)
-        loc_group = QGroupBox('Club Location')
+        loc_group = QGroupBox(tr('group.club_location'))
         loc_layout = QFormLayout(loc_group)
         loc_layout.setFieldGrowthPolicy(
             QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
 
         self._continent_combo = QComboBox()
         self._configure_combo_popup(self._continent_combo)
-        self._continent_combo.addItem('Any')
+        self._continent_combo.addItem(tr('filter.any'))
         for c in self._filter_data.get('club_continents', []):
             self._continent_combo.addItem(c)
         self._continent_combo.currentTextChanged.connect(
             self._on_continent_changed)
-        loc_layout.addRow('Continent:', self._continent_combo)
+        loc_layout.addRow(tr('filter.continent'), self._continent_combo)
 
         self._nation_combo = QComboBox()
         self._configure_combo_popup(self._nation_combo)
-        self._nation_combo.addItem('Any')
+        self._nation_combo.addItem(tr('filter.any'))
         self._nation_combo.currentTextChanged.connect(
             self._on_nation_changed)
-        loc_layout.addRow('Nation:', self._nation_combo)
+        loc_layout.addRow(tr('filter.nation'), self._nation_combo)
 
         self._league_combo = QComboBox()
         self._configure_combo_popup(self._league_combo)
-        self._league_combo.addItem('Any')
+        self._league_combo.addItem(tr('filter.any'))
         self._league_combo.currentTextChanged.connect(
             self._on_league_changed)
-        loc_layout.addRow('League:', self._league_combo)
+        loc_layout.addRow(tr('filter.league'), self._league_combo)
 
         self._club_combo = QComboBox()
         self._configure_combo_popup(self._club_combo)
-        self._club_combo.addItem('Any')
-        loc_layout.addRow('Club:', self._club_combo)
+        self._club_combo.addItem(tr('filter.any'))
+        loc_layout.addRow(tr('filter.club'), self._club_combo)
 
         top_row.addWidget(loc_group)
         outer.addLayout(top_row)
@@ -1290,36 +1208,36 @@ class SearchDialog(QDialog):
         # Position filter + ranges side by side
         mid_layout = QHBoxLayout()
 
-        pos_group = QGroupBox('Positions')
+        pos_group = QGroupBox(tr('group.positions'))
         pos_inner = QVBoxLayout(pos_group)
         self._pos_widget = PositionFilterWidget()
         pos_inner.addWidget(self._pos_widget)
         mid_layout.addWidget(pos_group)
 
-        range_group = QGroupBox('Ranges')
+        range_group = QGroupBox(tr('group.ranges'))
         range_layout = QFormLayout(range_group)
         range_layout.setFieldGrowthPolicy(
             QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
 
         self._age_min = self._spin(15, 50, 0)
         self._age_max = self._spin(15, 50, 0)
-        range_layout.addRow('Age min:', self._age_min)
-        range_layout.addRow('Age max:', self._age_max)
+        range_layout.addRow(tr('filter.age_min'), self._age_min)
+        range_layout.addRow(tr('filter.age_max'), self._age_max)
 
         self._ca_min = self._spin(0, 200, 0)
         self._ca_max = self._spin(0, 200, 0)
-        range_layout.addRow('CA min:', self._ca_min)
-        range_layout.addRow('CA max:', self._ca_max)
+        range_layout.addRow(tr('filter.ca_min'), self._ca_min)
+        range_layout.addRow(tr('filter.ca_max'), self._ca_max)
 
         self._pa_min = self._spin(0, 200, 0)
         self._pa_max = self._spin(0, 200, 0)
-        range_layout.addRow('PA min:', self._pa_min)
-        range_layout.addRow('PA max:', self._pa_max)
+        range_layout.addRow(tr('filter.pa_min'), self._pa_min)
+        range_layout.addRow(tr('filter.pa_max'), self._pa_max)
 
         self._rep_min = self._spin(0, 10000, 0, step=100)
         self._rep_max = self._spin(0, 10000, 0, step=100)
-        range_layout.addRow('Rep min:', self._rep_min)
-        range_layout.addRow('Rep max:', self._rep_max)
+        range_layout.addRow(tr('filter.rep_min'), self._rep_min)
+        range_layout.addRow(tr('filter.rep_max'), self._rep_max)
 
         mid_layout.addWidget(range_group)
         outer.addLayout(mid_layout)
@@ -1330,8 +1248,8 @@ class SearchDialog(QDialog):
     def _on_nat_continent_changed(self, text: str):
         self._nat_nation_combo.blockSignals(True)
         self._nat_nation_combo.clear()
-        self._nat_nation_combo.addItem('Any')
-        if text and text != 'Any':
+        self._nat_nation_combo.addItem(tr('filter.any'))
+        if text and text != tr('filter.any'):
             nations = self._filter_data.get('nat_nations', {}).get(text, [])
             for n in nations:
                 self._nat_nation_combo.addItem(n)
@@ -1340,8 +1258,8 @@ class SearchDialog(QDialog):
     def _on_continent_changed(self, text: str):
         self._nation_combo.blockSignals(True)
         self._nation_combo.clear()
-        self._nation_combo.addItem('Any')
-        if text and text != 'Any':
+        self._nation_combo.addItem(tr('filter.any'))
+        if text and text != tr('filter.any'):
             nations = self._filter_data.get('club_nations', {}).get(text, [])
             for n in nations:
                 self._nation_combo.addItem(n)
@@ -1351,8 +1269,8 @@ class SearchDialog(QDialog):
     def _on_nation_changed(self, text: str):
         self._league_combo.blockSignals(True)
         self._league_combo.clear()
-        self._league_combo.addItem('Any')
-        if text and text != 'Any':
+        self._league_combo.addItem(tr('filter.any'))
+        if text and text != tr('filter.any'):
             leagues = self._filter_data.get('leagues', {}).get(text, [])
             for league_name, rep in leagues:
                 self._league_combo.addItem(
@@ -1363,13 +1281,40 @@ class SearchDialog(QDialog):
     def _on_league_changed(self, text: str):
         self._club_combo.blockSignals(True)
         self._club_combo.clear()
-        self._club_combo.addItem('Any')
-        if text and text != 'Any':
+        self._club_combo.addItem(tr('filter.any'))
+        if text and text != tr('filter.any'):
             league_name = text.rsplit(' (', 1)[0]
             clubs = self._filter_data.get('clubs', {}).get(league_name, [])
             for c in sorted(clubs):
                 self._club_combo.addItem(c)
         self._club_combo.blockSignals(False)
+
+    # -- Traits tab --------------------------------------------------------
+
+    def _build_traits_tab(self):
+        from fm_scout.player import PLAYER_TRAIT_MAP
+        tab = QWidget()
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        content = QWidget()
+        lay = QVBoxLayout(content)
+        lay.setContentsMargins(8, 8, 8, 8)
+        lay.setSpacing(2)
+
+        self._trait_checks: dict[str, QCheckBox] = {}
+        for _, _, name in PLAYER_TRAIT_MAP:
+            cb = QCheckBox(name)
+            cb.setStyleSheet('color: #c9d1d9; font-size: 11px;')
+            lay.addWidget(cb)
+            self._trait_checks[name] = cb
+
+        lay.addStretch()
+        scroll.setWidget(content)
+        tab_layout = QVBoxLayout(tab)
+        tab_layout.setContentsMargins(0, 0, 0, 0)
+        tab_layout.addWidget(scroll)
+        self._tabs.addTab(tab, 'Traits')
 
     # -- Attribute tabs ----------------------------------------------------
 
@@ -1493,6 +1438,8 @@ class SearchDialog(QDialog):
         for smin, smax in self._attr_spins.values():
             smin.setValue(0)
             smax.setValue(0)
+        for cb in self._trait_checks.values():
+            cb.setChecked(False)
 
     # -- Restore / collect -------------------------------------------------
 
@@ -1544,6 +1491,11 @@ class SearchDialog(QDialog):
                 smin.setValue(bounds[0])
                 smax.setValue(bounds[1])
 
+        for trait_name in c.get('traits', []):
+            cb = self._trait_checks.get(trait_name)
+            if cb:
+                cb.setChecked(True)
+
     def get_filters(self) -> dict:
         f: dict = {}
 
@@ -1552,28 +1504,28 @@ class SearchDialog(QDialog):
             f['name'] = name
 
         nat_cont = self._nat_continent_combo.currentText()
-        if nat_cont and nat_cont != 'Any':
+        if nat_cont and nat_cont != tr('filter.any'):
             f['nat_continent'] = nat_cont
 
         nationality = self._nat_nation_combo.currentText()
-        if nationality and nationality != 'Any':
+        if nationality and nationality != tr('filter.any'):
             f['nationality'] = nationality
 
         continent = self._continent_combo.currentText()
-        if continent and continent != 'Any':
+        if continent and continent != tr('filter.any'):
             f['club_continent'] = continent
 
         nation = self._nation_combo.currentText()
-        if nation and nation != 'Any':
+        if nation and nation != tr('filter.any'):
             f['club_nation'] = nation
 
         league_text = self._league_combo.currentText()
-        if league_text and league_text != 'Any':
+        if league_text and league_text != tr('filter.any'):
             f['league_display'] = league_text
             f['league'] = league_text.rsplit(' (', 1)[0]
 
         club = self._club_combo.currentText()
-        if club and club != 'Any':
+        if club and club != tr('filter.any'):
             f['club'] = club
 
         if self._age_min.value() > self._age_min.minimum():
@@ -1606,6 +1558,12 @@ class SearchDialog(QDialog):
         if attrs:
             f['attrs'] = attrs
 
+        selected_traits = [
+            name for name, cb in self._trait_checks.items() if cb.isChecked()
+        ]
+        if selected_traits:
+            f['traits'] = selected_traits
+
         return f
 
 
@@ -1618,7 +1576,7 @@ class PlayerDetailDialog(QDialog):
 
     def __init__(self, player, parent=None):
         super().__init__(parent)
-        self.setWindowTitle(getattr(player, 'display_name', '') or 'Player')
+        self.setWindowTitle(getattr(player, 'display_name', '') or tr('player.title_fallback'))
         self.setMinimumSize(720, 660)
         self.setStyleSheet(SS_WIDGET + SS_DIALOG)
 
@@ -1635,7 +1593,8 @@ class PlayerDetailDialog(QDialog):
         tabs = QTabWidget()
         tabs.addTab(self._build_attributes_tab(player), 'Attributes')
         tabs.addTab(self._build_positions_tab(player), 'Positions')
-        tabs.addTab(self._build_personality_tab(player), 'Personality')
+        tabs.addTab(self._build_contract_tab(player), 'Contract')
+        tabs.addTab(self._build_traits_tab(player), 'Traits')
         layout.addWidget(tabs, 1)
 
     def _build_header(self, player) -> QWidget:
@@ -1654,8 +1613,9 @@ class PlayerDetailDialog(QDialog):
         parts = []
         if player.club:
             parts.append(player.club)
-        if player.nationality:
-            parts.append(player.nationality)
+        nat_text = getattr(player, 'nationality_display', '') or player.nationality
+        if nat_text:
+            parts.append(nat_text)
         if parts:
             sub_lbl = QLabel(' · '.join(parts))
             sub_lbl.setStyleSheet('color: #8b949e; font-size: 13px;')
@@ -1703,25 +1663,25 @@ class PlayerDetailDialog(QDialog):
         if getattr(player, 'on_loan', False):
             parent = getattr(player, 'parent_club', '')
             if parent:
-                parts.append(f'On Loan from: {parent}')
+                parts.append(tr('player.on_loan_from', club=parent))
             else:
-                parts.append('On Loan')
+                parts.append(tr('player.on_loan'))
         if getattr(player, 'transfer_listed', False):
-            parts.append('Transfer Listed')
+            parts.append(tr('player.transfer_listed'))
         if getattr(player, 'loan_listed', False):
-            parts.append('Loan Listed')
+            parts.append(tr('player.loan_listed'))
 
         expiry = getattr(player, 'contract_expiry', 0)
         if expiry:
-            parts.append(f'Contract expires: {_format_fm_date(expiry)}')
+            parts.append(tr('player.contract_expires', date=_format_fm_date(expiry)))
 
         opt_years = getattr(player, 'contract_option_years', 0)
         if opt_years:
-            parts.append(f'Option years: {opt_years}')
+            parts.append(tr('player.option_years', years=opt_years))
 
         league = getattr(player, 'league', '')
         if league:
-            parts.append(f'League: {league}')
+            parts.append(tr('player.league_label', league=league))
 
         if not parts:
             return None
@@ -1740,17 +1700,20 @@ class PlayerDetailDialog(QDialog):
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         w = QWidget()
-        master_lay = QHBoxLayout(w)
-        master_lay.setContentsMargins(8, 8, 8, 8)
-        master_lay.setSpacing(16)
+        outer = QVBoxLayout(w)
+        outer.setContentsMargins(8, 8, 8, 8)
+        outer.setSpacing(12)
 
-        sections = [
+        columns_lay = QHBoxLayout()
+        columns_lay.setSpacing(16)
+
+        main_sections = [
             ('Technical', ATTR_OFFSETS.TECHNICAL_FIELDS),
             ('Mental', ATTR_OFFSETS.MENTAL_FIELDS),
             ('Physical', ATTR_OFFSETS.PHYSICAL_FIELDS),
             ('Goalkeeping', ATTR_OFFSETS.GOALKEEPER_FIELDS),
         ]
-        for section_name, fields in sections:
+        for section_name, fields in main_sections:
             col_w = QWidget()
             col_lay = QVBoxLayout(col_w)
             col_lay.setContentsMargins(0, 0, 0, 0)
@@ -1782,9 +1745,57 @@ class PlayerDetailDialog(QDialog):
                 col_lay.addWidget(row_w)
 
             col_lay.addStretch()
-            master_lay.addWidget(col_w)
+            columns_lay.addWidget(col_w)
 
-        master_lay.addStretch()
+        columns_lay.addStretch()
+        outer.addLayout(columns_lay)
+
+        hidden_hdr = QLabel('Hidden')
+        hidden_hdr.setStyleSheet(
+            'color: #58a6ff; font-size: 11px; font-weight: 700;')
+        outer.addWidget(hidden_hdr)
+
+        hidden_row = QHBoxLayout()
+        hidden_row.setSpacing(16)
+        for field in ATTR_OFFSETS.HIDDEN_FIELDS:
+            val = getattr(player, field, 0) or 0
+            display = FULL_NAMES.get(field, field)
+            color = attr_color_hex(val) if val > 0 else '#484f58'
+            lbl = QLabel(
+                f"<span style='color:#c9d1d9'>{display}</span> "
+                f"<span style='color:{color}; font-weight:600'>{val if val else '-'}</span>"
+            )
+            lbl.setStyleSheet('font-size: 11px;')
+            hidden_row.addWidget(lbl)
+        hidden_row.addStretch()
+        outer.addLayout(hidden_row)
+
+        pers_hdr = QLabel('Personality')
+        pers_hdr.setStyleSheet(
+            'color: #58a6ff; font-size: 11px; font-weight: 700;')
+        outer.addWidget(pers_hdr)
+
+        pers_grid = QGridLayout()
+        pers_grid.setSpacing(4)
+        pcol = 0
+        prow = 0
+        for pc in PERSONALITY_COLS:
+            val = getattr(player, pc, 0) or 0
+            display = pc[5:].replace('_', ' ').title()
+            color = attr_color_hex(val) if val > 0 else '#484f58'
+            lbl = QLabel(
+                f"<span style='color:#c9d1d9'>{display}</span> "
+                f"<span style='color:{color}; font-weight:600'>{val if val else '-'}</span>"
+            )
+            lbl.setStyleSheet('font-size: 11px;')
+            pers_grid.addWidget(lbl, prow, pcol)
+            pcol += 1
+            if pcol >= 4:
+                pcol = 0
+                prow += 1
+        outer.addLayout(pers_grid)
+
+        outer.addStretch()
         scroll.setWidget(w)
         return scroll
 
@@ -1805,7 +1816,7 @@ class PlayerDetailDialog(QDialog):
         list_lay.setContentsMargins(0, 0, 0, 0)
         list_lay.setSpacing(2)
 
-        hdr = QLabel('Position Ratings')
+        hdr = QLabel(tr('player.position_ratings'))
         hdr.setStyleSheet('color: #58a6ff; font-size: 12px; font-weight: 700;')
         list_lay.addWidget(hdr)
 
@@ -1866,6 +1877,93 @@ class PlayerDetailDialog(QDialog):
         scroll.setWidget(w)
         return scroll
 
+    def _build_contract_tab(self, player) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(12, 12, 12, 12)
+        lay.setSpacing(8)
+
+        club = getattr(player, 'club', '') or '-'
+        club_lbl = QLabel(f"<span style='color:#58a6ff; font-weight:700;'>{club}</span>")
+        club_lbl.setStyleSheet('font-size: 14px;')
+        lay.addWidget(club_lbl)
+
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet('color: #21262d;')
+        lay.addWidget(sep)
+
+        wage = getattr(player, 'wage', 0) or 0
+        expiry = getattr(player, 'contract_expiry', 0) or 0
+        opt_years = getattr(player, 'contract_option_years', 0) or 0
+        transfer_opts = getattr(player, 'contract_transfer_opts', 0) or 0
+
+        rows = []
+        if wage:
+            rows.append(('Weekly Wage', _format_money(wage) + ' p/w'))
+        if expiry:
+            rows.append(('Expires', _format_fm_date(expiry)))
+        if opt_years:
+            rows.append(('Option Years', str(opt_years)))
+        if transfer_opts:
+            rows.append(('Transfer Options', str(transfer_opts)))
+
+        if getattr(player, 'on_loan', False):
+            parent = getattr(player, 'parent_club', '')
+            rows.append(('Status', f'On Loan from {parent}' if parent else 'On Loan'))
+        if getattr(player, 'transfer_listed', False):
+            rows.append(('Status', 'Transfer Listed'))
+        if getattr(player, 'loan_listed', False):
+            rows.append(('Status', 'Available for Loan'))
+
+        league = getattr(player, 'league', '')
+        if league:
+            rows.append(('League', league))
+
+        grid = QGridLayout()
+        grid.setSpacing(6)
+        for i, (label, value) in enumerate(rows):
+            l = QLabel(label)
+            l.setStyleSheet('color: #8b949e; font-size: 12px;')
+            v = QLabel(value)
+            v.setStyleSheet('color: #f0f6fc; font-size: 12px; font-weight: 600;')
+            grid.addWidget(l, i, 0)
+            grid.addWidget(v, i, 1)
+        grid.setColumnStretch(1, 1)
+        lay.addLayout(grid)
+
+        if not rows:
+            empty = QLabel('No contract information available.')
+            empty.setStyleSheet('color: #484f58; font-size: 12px;')
+            lay.addWidget(empty)
+
+        lay.addStretch()
+        return w
+
+    def _build_traits_tab(self, player) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(12, 12, 12, 12)
+        lay.setSpacing(4)
+
+        hdr = QLabel('Player Traits')
+        hdr.setStyleSheet('color: #58a6ff; font-size: 12px; font-weight: 700;')
+        lay.addWidget(hdr)
+
+        traits = getattr(player, 'traits', []) or []
+        if traits:
+            for trait in traits:
+                lbl = QLabel(f"\u2022  {trait}")
+                lbl.setStyleSheet('color: #c9d1d9; font-size: 12px; padding: 2px 0;')
+                lay.addWidget(lbl)
+        else:
+            empty = QLabel('No player traits.')
+            empty.setStyleSheet('color: #484f58; font-size: 12px;')
+            lay.addWidget(empty)
+
+        lay.addStretch()
+        return w
+
     @staticmethod
     def _section_label(text: str) -> QLabel:
         lbl = QLabel(text)
@@ -1884,7 +1982,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle('FM Scout')
+        self.setWindowTitle(tr('app.title'))
         self.resize(1400, 860)
         self.setStyleSheet(SS_WIDGET)
 
@@ -1922,12 +2020,12 @@ class MainWindow(QMainWindow):
 
         # Top bar
         top_bar = QHBoxLayout()
-        self._scan_btn = QPushButton('Scan Players')
+        self._scan_btn = QPushButton(tr('button.scan'))
         self._scan_btn.setObjectName('primary')
         self._scan_btn.clicked.connect(self._start_scan)
         top_bar.addWidget(self._scan_btn)
 
-        self._refresh_btn = QPushButton('Refresh')
+        self._refresh_btn = QPushButton(tr('button.refresh'))
         self._refresh_btn.clicked.connect(self._start_scan)
         self._refresh_btn.setVisible(False)
         top_bar.addWidget(self._refresh_btn)
@@ -1937,6 +2035,19 @@ class MainWindow(QMainWindow):
             'color: #f0f6fc; font-size: 13px; font-weight: 600;')
         top_bar.addWidget(self._count_label)
         top_bar.addStretch()
+
+        from fm_scout.locale import available_languages, get_language, set_language
+        self._lang_combo = QComboBox()
+        self._lang_combo.setFixedWidth(100)
+        for lang in available_languages():
+            self._lang_combo.addItem(tr(f"language.{lang}"), lang)
+        current = get_language()
+        idx = self._lang_combo.findData(current)
+        if idx >= 0:
+            self._lang_combo.setCurrentIndex(idx)
+        self._lang_combo.currentIndexChanged.connect(self._on_language_changed)
+        top_bar.addWidget(self._lang_combo)
+
         root.addLayout(top_bar)
 
         # Tab widget
@@ -1947,10 +2058,10 @@ class MainWindow(QMainWindow):
         self._build_shortlist_tab()
 
         self._tactics_widget = TacticsBuilderWidget()
-        self._tab_widget.addTab(self._tactics_widget, 'Tactics')
+        self._tab_widget.addTab(self._tactics_widget, tr('tab.tactics'))
 
         self._club_widget = ClubViewerWidget()
-        self._tab_widget.addTab(self._club_widget, 'Clubs')
+        self._tab_widget.addTab(self._club_widget, tr('tab.clubs'))
 
         # Status bar
         self._status_bar = QStatusBar()
@@ -1977,19 +2088,19 @@ class MainWindow(QMainWindow):
         tbar = QHBoxLayout(self._search_toolbar)
         tbar.setContentsMargins(0, 4, 0, 4)
 
-        filter_btn = QPushButton('Filter')
+        filter_btn = QPushButton(tr('button.filter'))
         filter_btn.clicked.connect(self._open_search_dialog)
         tbar.addWidget(filter_btn)
 
-        clear_btn = QPushButton('Clear')
+        clear_btn = QPushButton(tr('button.clear'))
         clear_btn.clicked.connect(self._clear_filters)
         tbar.addWidget(clear_btn)
 
-        add_sl_btn = QPushButton('Add to Shortlist')
+        add_sl_btn = QPushButton(tr('button.add_shortlist'))
         add_sl_btn.clicked.connect(self._add_to_shortlist)
         tbar.addWidget(add_sl_btn)
 
-        export_btn = QPushButton('Export CSV')
+        export_btn = QPushButton(tr('button.export_csv'))
         export_btn.clicked.connect(self._export_search_csv)
         tbar.addWidget(export_btn)
 
@@ -2032,7 +2143,7 @@ class MainWindow(QMainWindow):
         hdr.customContextMenuRequested.connect(self._show_column_menu)
 
         lay.addWidget(self._search_table)
-        self._tab_widget.addTab(tab, 'Search')
+        self._tab_widget.addTab(tab, tr('tab.search'))
 
     def _build_shortlist_tab(self):
         tab = QWidget()
@@ -2043,15 +2154,15 @@ class MainWindow(QMainWindow):
         tbar = QHBoxLayout(self._shortlist_toolbar)
         tbar.setContentsMargins(0, 4, 0, 4)
 
-        remove_btn = QPushButton('Remove')
+        remove_btn = QPushButton(tr('button.remove'))
         remove_btn.clicked.connect(self._remove_from_shortlist)
         tbar.addWidget(remove_btn)
 
-        save_btn = QPushButton('Save')
+        save_btn = QPushButton(tr('button.save'))
         save_btn.clicked.connect(self._export_shortlist)
         tbar.addWidget(save_btn)
 
-        load_btn = QPushButton('Load')
+        load_btn = QPushButton(tr('button.load'))
         load_btn.clicked.connect(self._import_shortlist)
         tbar.addWidget(load_btn)
 
@@ -2096,7 +2207,7 @@ class MainWindow(QMainWindow):
         sl_hdr.customContextMenuRequested.connect(self._show_column_menu)
 
         lay.addWidget(self._shortlist_table)
-        self._tab_widget.addTab(tab, 'Shortlist')
+        self._tab_widget.addTab(tab, tr('tab.shortlist'))
 
     # -- Scanning ----------------------------------------------------------
 
@@ -2107,7 +2218,7 @@ class MainWindow(QMainWindow):
         self._scan_btn.setEnabled(False)
         self._refresh_btn.setEnabled(False)
         self._progress_bar.setVisible(False)
-        self._status_bar.showMessage('Scanning…')
+        self._status_bar.showMessage(tr('msg.scanning'))
 
         self._scan_worker = ScanWorker()
         self._scan_worker.progress.connect(self._on_scan_progress)
@@ -2152,8 +2263,9 @@ class MainWindow(QMainWindow):
             w.setVisible(True)
 
         self._status_bar.showMessage(
-            f'Scan complete – {len(players):,} players, '
-            f'{len(clubs):,} clubs', 5000)
+            tr('msg.scan_complete',
+               players=f'{len(players):,}',
+               clubs=f'{len(clubs):,}'), 5000)
 
         if self._active_filters:
             self._apply_active_filters()
@@ -2162,8 +2274,8 @@ class MainWindow(QMainWindow):
         self._scan_btn.setEnabled(True)
         self._refresh_btn.setEnabled(True)
         self._progress_bar.setVisible(False)
-        self._status_bar.showMessage(f'Error: {msg}', 10000)
-        QMessageBox.critical(self, 'Scan Error', msg)
+        self._status_bar.showMessage(tr('msg.error_prefix', msg=msg), 10000)
+        QMessageBox.critical(self, tr('msg.scan_error'), msg)
 
     # -- Column management -------------------------------------------------
 
@@ -2171,11 +2283,11 @@ class MainWindow(QMainWindow):
         menu = QMenu(self)
         menu.setStyleSheet(SS_DIALOG)
 
-        default_action = menu.addAction('Show Default Columns Only')
+        default_action = menu.addAction(tr('menu.show_default'))
         default_action.setData('__reset__')
         menu.addSeparator()
 
-        sub_contract = menu.addMenu('Contract / Status')
+        sub_contract = menu.addMenu(tr('menu.contract_status'))
         for col in CONTRACT_EXTRA_COLS:
             act = sub_contract.addAction(MENU_HEADERS.get(col, col))
             act.setCheckable(True)
@@ -2412,12 +2524,31 @@ class MainWindow(QMainWindow):
             self._filter_label.setText('')
             return
 
-        name_query = f.get('name', '').lower()
+        def _fold(s: str) -> str:
+            if not s:
+                return ''
+            # FM-style transliteration: allow "ss" to match German sharp-s.
+            s = s.replace('ß', 'ss').replace('ẞ', 'ss')
+            return unicodedata.normalize('NFKD', s).encode('ascii', 'ignore').decode('ascii').lower()
+
+        name_query = _fold(f.get('name', ''))
 
         def predicate(player) -> bool:
             if name_query:
-                pname = (getattr(player, 'name', '') or '').lower()
+                pname = _fold(getattr(player, 'display_name', '') or '')
                 if name_query not in pname:
+                    first = _fold(getattr(player, 'first_name', '') or '')
+                    last = _fold(getattr(player, 'last_name', '') or '')
+                    if name_query not in first and name_query not in last:
+                        return False
+
+            if f.get('nat_continent'):
+                pnat_cont = (
+                    getattr(player, 'continent', '') or
+                    getattr(player, 'league_continent', '') or
+                    ''
+                )
+                if pnat_cont != f['nat_continent']:
                     return False
 
             if f.get('nationality'):
@@ -2483,6 +2614,13 @@ class MainWindow(QMainWindow):
                 if amax > 0 and val > amax:
                     return False
 
+            required_traits = f.get('traits', [])
+            if required_traits:
+                player_traits = set(getattr(player, 'traits', []) or [])
+                for trait in required_traits:
+                    if trait not in player_traits:
+                        return False
+
             return True
 
         self._search_model.filter(predicate)
@@ -2499,7 +2637,7 @@ class MainWindow(QMainWindow):
         if f.get('club'):
             parts.append(f['club'])
         n = len(self._search_model.get_view_players())
-        desc = ' › '.join(parts) if parts else 'Custom filter'
+        desc = ' › '.join(parts) if parts else tr('msg.custom_filter')
         self._filter_label.setText(f'{desc} ({n:,} results)')
 
     def _clear_filters(self):
@@ -2523,7 +2661,7 @@ class MainWindow(QMainWindow):
         if added:
             self._rebuild_shortlist_model()
             self._status_bar.showMessage(
-                f'Added {added} player(s) to shortlist', 3000)
+                tr('msg.added_shortlist', count=added), 3000)
 
     def _remove_from_shortlist(self):
         indexes = self._shortlist_table.selectionModel().selectedRows()
@@ -2538,7 +2676,7 @@ class MainWindow(QMainWindow):
         if removed:
             self._rebuild_shortlist_model()
             self._status_bar.showMessage(
-                f'Removed {removed} player(s) from shortlist', 3000)
+                tr('msg.removed_shortlist', count=removed), 3000)
 
     def _rebuild_shortlist_model(self):
         if not self._shortlist_uids:
@@ -2556,7 +2694,7 @@ class MainWindow(QMainWindow):
 
     def _export_shortlist(self):
         path, _ = QFileDialog.getSaveFileName(
-            self, 'Save Shortlist', '', 'CSV Files (*.csv)')
+            self, tr('file_dialog.save_shortlist'), '', tr('file_dialog.csv_filter'))
         if not path:
             return
 
@@ -2581,13 +2719,13 @@ class MainWindow(QMainWindow):
                         _estimated_player_value(p),
                     ])
             self._status_bar.showMessage(
-                f'Saved {len(players)} players to {path}', 5000)
+                tr('msg.saved_shortlist', count=len(players), path=path), 5000)
         except OSError as e:
-            QMessageBox.warning(self, 'Export Error', str(e))
+            QMessageBox.warning(self, tr('msg.export_error'), str(e))
 
     def _import_shortlist(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, 'Load Shortlist', '', 'CSV Files (*.csv)')
+            self, tr('file_dialog.load_shortlist'), '', tr('file_dialog.csv_filter'))
         if not path:
             return
 
@@ -2608,13 +2746,13 @@ class MainWindow(QMainWindow):
             added = len(self._shortlist_uids) - before
             self._rebuild_shortlist_model()
             self._status_bar.showMessage(
-                f'Loaded shortlist: {added} new player(s) added', 5000)
+                tr('msg.loaded_shortlist', count=added), 5000)
         except OSError as e:
-            QMessageBox.warning(self, 'Import Error', str(e))
+            QMessageBox.warning(self, tr('msg.import_error'), str(e))
 
     def _export_search_csv(self):
         path, _ = QFileDialog.getSaveFileName(
-            self, 'Export Players', '', 'CSV Files (*.csv)')
+            self, tr('file_dialog.export_players'), '', tr('file_dialog.csv_filter'))
         if not path:
             return
 
@@ -2648,9 +2786,9 @@ class MainWindow(QMainWindow):
                     writer.writerow(row_data)
 
             self._status_bar.showMessage(
-                f'Exported {len(players)} players to {path}', 5000)
+                tr('msg.exported_players', count=len(players), path=path), 5000)
         except OSError as e:
-            QMessageBox.warning(self, 'Export Error', str(e))
+            QMessageBox.warning(self, tr('msg.export_error'), str(e))
 
     # -- Double click detail -----------------------------------------------
 
@@ -2680,6 +2818,18 @@ class MainWindow(QMainWindow):
         super().resizeEvent(event)
         self._apply_col_widths()
 
+    def _on_language_changed(self, index: int):
+        lang = self._lang_combo.currentData()
+        if lang:
+            from fm_scout.locale import set_language
+            set_language(lang)
+            settings = QSettings('FMScout', 'FMScout')
+            settings.setValue('language', lang)
+            QMessageBox.information(
+                self, tr('app.title'),
+                'Language changed. Please restart the application for full effect.'
+            )
+
     def closeEvent(self, event):
         self._save_column_layout()
         super().closeEvent(event)
@@ -2692,6 +2842,11 @@ class MainWindow(QMainWindow):
 def main():
     app = QApplication(sys.argv)
     app.setStyle('Fusion')
+
+    from fm_scout.locale import set_language
+    settings = QSettings('FMScout', 'FMScout')
+    saved_lang = settings.value('language', 'en', type=str)
+    set_language(saved_lang)
 
     from PyQt6.QtGui import QPalette
     palette = QPalette()
