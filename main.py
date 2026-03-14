@@ -1679,6 +1679,11 @@ class PlayerDetailDialog(QDialog):
         if opt_years:
             parts.append(tr('player.option_years', years=opt_years))
 
+        clause_rows = self._release_clause_rows(player)
+        if clause_rows:
+            label, value = clause_rows[0]
+            parts.append(f"{label}: {value}")
+
         league = getattr(player, 'league', '')
         if league:
             parts.append(tr('player.league_label', league=league))
@@ -1694,6 +1699,23 @@ class PlayerDetailDialog(QDialog):
             lbl.setStyleSheet('color: #c9d1d9; font-size: 12px;')
             lay.addWidget(lbl)
         return w
+
+    @staticmethod
+    def _release_clause_rows(player) -> list[tuple[str, str]]:
+        rows: list[tuple[str, str]] = []
+        defs = (
+            ('release_clause', 'player.release_clause.min'),
+            ('release_clause_foreign', 'player.release_clause.foreign'),
+            ('release_clause_domestic_higher', 'player.release_clause.domestic_higher'),
+            ('release_clause_domestic', 'player.release_clause.domestic'),
+            ('release_clause_continental', 'player.release_clause.continental'),
+            ('release_clause_major_continental', 'player.release_clause.major_continental'),
+        )
+        for field, label_key in defs:
+            amount = getattr(player, field, 0) or 0
+            if amount > 0:
+                rows.append((tr(label_key), _format_money(amount)))
+        return rows
 
     def _build_attributes_tab(self, player) -> QWidget:
         scroll = QScrollArea()
@@ -1907,6 +1929,7 @@ class PlayerDetailDialog(QDialog):
             rows.append(('Option Years', str(opt_years)))
         if transfer_opts:
             rows.append(('Transfer Options', str(transfer_opts)))
+        rows.extend(self._release_clause_rows(player))
 
         if getattr(player, 'on_loan', False):
             parent = getattr(player, 'parent_club', '')

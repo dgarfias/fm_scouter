@@ -224,6 +224,14 @@
     "loan_listed": "Loan Listed",
     "contract_expires": "Contract expires: {date}",
     "option_years": "Option years: {years}",
+    "release_clause": {
+      "min": "Minimum release clause",
+      "foreign": "Release clause (foreign clubs)",
+      "domestic_higher": "Release clause (domestic clubs in higher division)",
+      "domestic": "Release clause (domestic clubs)",
+      "continental": "Release clause (clubs in continental competitions)",
+      "major_continental": "Release clause (clubs in major continental competitions)"
+    },
     "league_label": "League: {league}",
     "position_ratings": "Position Ratings",
     "loan_tag": "[L]",

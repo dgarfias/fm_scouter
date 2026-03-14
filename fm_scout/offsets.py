@@ -70,6 +70,7 @@ class StructOffsets:
     contract_expiry: int = 0x40   # packed FM date (high16=year, low16=day-of-year)
     contract_transfer_opts: int = 0x56  # transfer offer/clauses option code
     contract_option_years: int = 0x57   # optional extension years
+    contract_terms_vec: int = 0x60  # std::vector<packed term> (begin/end/cap pointers)
 
     # Team / Club chain (via contract_team)
     team_club: int = 0x30         # team -> club pointer

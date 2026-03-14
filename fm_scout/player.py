@@ -194,6 +194,12 @@ class Player:
     contract_expiry: int = 0
     contract_transfer_opts: int = 0
     contract_option_years: int = 0
+    release_clause: int = 0
+    release_clause_foreign: int = 0
+    release_clause_domestic_higher: int = 0
+    release_clause_domestic: int = 0
+    release_clause_continental: int = 0
+    release_clause_major_continental: int = 0
 
     positions: dict[str, int] = field(default_factory=dict)
     attributes: PlayerAttributes = field(default_factory=PlayerAttributes)
@@ -277,6 +283,12 @@ class Player:
             'transfer_listed': self.transfer_listed,
             'loan_listed': self.loan_listed,
             'contract_expiry': self.contract_expiry,
+            'release_clause': self.release_clause,
+            'release_clause_foreign': self.release_clause_foreign,
+            'release_clause_domestic_higher': self.release_clause_domestic_higher,
+            'release_clause_domestic': self.release_clause_domestic,
+            'release_clause_continental': self.release_clause_continental,
+            'release_clause_major_continental': self.release_clause_major_continental,
             **self.attributes.to_dict(),
         }
 
@@ -294,7 +306,17 @@ class PlayerReader:
 
     PLAYER_VTABLES: set[int] = set()
 
-    _CONTRACT_READ_SIZE = 0x60
+    _CONTRACT_READ_SIZE = 0x90
+    _MAX_CONTRACT_TERM_ENTRIES = 24
+    _CONTRACT_TERMS_READ_SIZE = _MAX_CONTRACT_TERM_ENTRIES * 8
+    _RELEASE_TERM_TO_FIELD = {
+        0x00: "release_clause",
+        0x10: "release_clause_foreign",
+        0x11: "release_clause_domestic_higher",
+        0x12: "release_clause_domestic",
+        0x1B: "release_clause_major_continental",
+        0x1F: "release_clause_continental",
+    }
     _NAME_BUF_SIZE = 96
     _NATION_NAME_BUF_SIZE = 64
     # Nationality list entries live in the leading qwords of the list node.
@@ -386,7 +408,10 @@ class PlayerReader:
         nations: list[str] = []
         if primary_nation:
             nations.append(primary_nation)
-        for n_ptr in self._resolve_nation_ptrs_from_root(nation_list_root_ptr):
+        for n_ptr in self._resolve_nation_ptrs_from_root(
+            nation_list_root_ptr,
+            nti_ptr,
+        ):
             n_name = self._resolve_nation(n_ptr)
             if not n_name:
                 continue
@@ -526,10 +551,13 @@ class PlayerReader:
         if parsed:
             root_child_addr_set: set[int] = set()
             person_root: dict[int, int] = {}
+            person_primary: dict[int, int] = {}
             for player, _, _, _, _, _, _, root_ptr in parsed:
                 person_root[player.address] = root_ptr or 0
                 if root_ptr:
                     root_child_addr_set.add(root_ptr)
+            for player, _, _, _, _, _, nti_ptr, _ in parsed:
+                person_primary[player.address] = nti_ptr or 0
 
             root_child_map = dict(reader.batch_read_u64(list(root_child_addr_set))) if root_child_addr_set else {}
             child_ptrs: list[int] = []
@@ -550,7 +578,8 @@ class PlayerReader:
                 blob = child_blobs.get(child)
                 if not blob:
                     continue
-                ptrs = self._extract_nation_ptrs_from_blob(blob)
+                nti_ptr = int(person_primary.get(player.address, 0) or 0)
+                ptrs = self._extract_nation_ptrs_from_blob(blob, nti_ptr)
                 if ptrs:
                     sec_ptrs_by_person[player.address] = ptrs
                     for ptr in ptrs:
@@ -595,6 +624,21 @@ class PlayerReader:
             contract_data = reader.batch_read_fixed(
                 contract_addrs, self._CONTRACT_READ_SIZE,
             )
+        contract_terms_meta: dict[int, tuple[int, int]] = {}
+        terms_begin_addrs: list[int] = []
+        for contract_ptr, cdata in contract_data.items():
+            meta = self._extract_contract_terms_meta(cdata)
+            if not meta:
+                continue
+            begin, count = meta
+            contract_terms_meta[contract_ptr] = meta
+            terms_begin_addrs.append(begin)
+        terms_data: dict[int, bytes] = {}
+        if terms_begin_addrs:
+            terms_data = reader.batch_read_fixed(
+                list(set(terms_begin_addrs)),
+                self._CONTRACT_TERMS_READ_SIZE,
+            )
         logger.debug(
             "Phase 4: read %d/%d contracts",
             len(contract_data), len(contract_addrs),
@@ -608,7 +652,19 @@ class PlayerReader:
             if contract_ptr:
                 cdata = contract_data.get(contract_ptr)
                 if cdata:
-                    team_ptr = self._parse_contract_data(player, cdata)
+                    terms_blob = None
+                    meta = contract_terms_meta.get(contract_ptr)
+                    if meta:
+                        begin, count = meta
+                        data = terms_data.get(begin)
+                        need = count * 8
+                        if data and len(data) >= need:
+                            terms_blob = data[:need]
+                    team_ptr = self._parse_contract_data(
+                        player,
+                        cdata,
+                        terms_blob=terms_blob,
+                    )
 
                     if team_ptr:
                         self._resolve_club_chain(player, team_ptr)
@@ -957,13 +1013,28 @@ class PlayerReader:
         return nation
 
     @staticmethod
-    def _extract_nation_ptrs_from_blob(blob: bytes) -> list[int]:
+    def _extract_nation_ptrs_from_blob(
+        blob: bytes,
+        primary_nation_ptr: int = 0,
+    ) -> list[int]:
         counts: dict[int, int] = {}
         first_off: dict[int, int] = {}
-        for off in range(0, len(blob) - 7, 8):
+        for off in range(0, len(blob) - 15, 8):
             ptr = struct.unpack_from('<Q', blob, off)[0]
             if not ptr or ptr < 0x10000 or ptr > 0x7FFFFFFFFFFF:
                 continue
+
+            # The nation-list node stores pointer+metadata pairs.
+            # Metadata high-dword 0xFF00FF02 maps to non-passport links
+            # (e.g. birthplace ancestry chain), which can produce false
+            # secondary nationalities such as Serbia+Mexico when only the
+            # primary passport is valid in-game.
+            if ptr != primary_nation_ptr:
+                meta = struct.unpack_from('<Q', blob, off + 8)[0]
+                meta_hi = (meta >> 32) & 0xFFFFFFFF
+                if meta_hi == 0xFF00FF02:
+                    continue
+
             counts[ptr] = counts.get(ptr, 0) + 1
             if ptr not in first_off:
                 first_off[ptr] = off
@@ -972,7 +1043,11 @@ class PlayerReader:
             key=lambda p: (-counts[p], first_off[p]),
         )
 
-    def _resolve_nation_ptrs_from_root(self, nation_list_root_ptr: int) -> list[int]:
+    def _resolve_nation_ptrs_from_root(
+        self,
+        nation_list_root_ptr: int,
+        primary_nation_ptr: int = 0,
+    ) -> list[int]:
         """Resolve additional nationality pointers from nation-list root."""
         if not nation_list_root_ptr:
             return []
@@ -982,7 +1057,7 @@ class PlayerReader:
         blob = self.reader.read_bytes(list_node_ptr, self._NATION_LIST_SCAN_SIZE)
         if not blob or len(blob) < 8:
             return []
-        return self._extract_nation_ptrs_from_blob(blob)
+        return self._extract_nation_ptrs_from_blob(blob, primary_nation_ptr)
 
     # ------------------------------------------------------------------ #
     #  Contract parsing                                                   #
@@ -994,12 +1069,26 @@ class PlayerReader:
         if cdata is None or len(cdata) < self._CONTRACT_READ_SIZE:
             return
 
-        team_ptr = self._parse_contract_data(player, cdata)
+        terms_blob = None
+        meta = self._extract_contract_terms_meta(cdata)
+        if meta:
+            begin, count = meta
+            need = count * 8
+            terms_blob = self.reader.read_bytes(begin, need)
+            if not terms_blob or len(terms_blob) < need:
+                terms_blob = None
+
+        team_ptr = self._parse_contract_data(player, cdata, terms_blob=terms_blob)
 
         if team_ptr:
             self._resolve_club_chain(player, team_ptr)
 
-    def _parse_contract_data(self, player: Player, cdata: bytes) -> int:
+    def _parse_contract_data(
+        self,
+        player: Player,
+        cdata: bytes,
+        terms_blob: Optional[bytes] = None,
+    ) -> int:
         """Parse contract data and return team_ptr."""
         so = self.so
 
@@ -1018,8 +1107,64 @@ class PlayerReader:
         if so.contract_option_years < len(cdata):
             player.contract_option_years = cdata[so.contract_option_years]
 
+        self._clear_release_clause_fields(player)
+        meta = self._extract_contract_terms_meta(cdata)
+        if meta:
+            begin, count = meta
+            need = count * 8
+            data = terms_blob
+            if data is None or len(data) < need:
+                data = self.reader.read_bytes(begin, need)
+            if data and len(data) >= need:
+                self._parse_release_clause_terms(player, data, count)
+
         team_ptr = struct.unpack_from('<Q', cdata, so.contract_team)[0]
         return team_ptr
+
+    @staticmethod
+    def _clear_release_clause_fields(player: Player):
+        player.release_clause = 0
+        player.release_clause_foreign = 0
+        player.release_clause_domestic_higher = 0
+        player.release_clause_domestic = 0
+        player.release_clause_continental = 0
+        player.release_clause_major_continental = 0
+
+    def _extract_contract_terms_meta(self, cdata: bytes) -> Optional[tuple[int, int]]:
+        so = self.so
+        off = so.contract_terms_vec
+        if off + 24 > len(cdata):
+            return None
+
+        begin = struct.unpack_from('<Q', cdata, off)[0]
+        end = struct.unpack_from('<Q', cdata, off + 8)[0]
+        if not begin or end < begin:
+            return None
+
+        span = end - begin
+        if span % 8 != 0:
+            return None
+
+        count = span // 8
+        if count <= 0 or count > self._MAX_CONTRACT_TERM_ENTRIES:
+            return None
+        return (begin, count)
+
+    def _parse_release_clause_terms(self, player: Player, terms_data: bytes, count: int):
+        for i in range(count):
+            raw = struct.unpack_from('<Q', terms_data, i * 8)[0]
+            term_type = (raw >> 48) & 0xFFFF
+            field = self._RELEASE_TERM_TO_FIELD.get(term_type)
+            if not field:
+                continue
+
+            amount = raw & 0xFFFFFFFF
+            if amount <= 0 or amount == 0xFFFFFFFF:
+                continue
+
+            current = getattr(player, field, 0)
+            if amount > current:
+                setattr(player, field, amount)
 
     @staticmethod
     def _apply_contract_flags(player: Player, flags: int):

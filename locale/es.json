@@ -224,6 +224,14 @@
     "loan_listed": "Disponible para Pr\u00e9stamo",
     "contract_expires": "Contrato hasta: {date}",
     "option_years": "A\u00f1os de opci\u00f3n: {years}",
+    "release_clause": {
+      "min": "Cl\u00e1usula m\u00ednima de rescisi\u00f3n",
+      "foreign": "Cl\u00e1usula (clubes extranjeros)",
+      "domestic_higher": "Cl\u00e1usula (clubes nacionales de categor\u00eda superior)",
+      "domestic": "Cl\u00e1usula (clubes nacionales)",
+      "continental": "Cl\u00e1usula (clubes en competiciones continentales)",
+      "major_continental": "Cl\u00e1usula (clubes en grandes competiciones continentales)"
+    },
     "league_label": "Liga: {league}",
     "position_ratings": "Valoraci\u00f3n por Posici\u00f3n",
     "loan_tag": "[C]",
