@@ -28,3 +28,10 @@ Thumbs.db
 
 # Plans
 .cursor/
+
+# Local tool settings and caches
+.claude/
+.ruff_cache/
+
+# Exported player attribute profiles (user data)
+profiles/

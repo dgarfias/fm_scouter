@@ -10,6 +10,7 @@ from PyQt6.QtWidgets import (
 
 from .club import Club
 from .locale import tr
+from .currency import format_eur_from_gbp
 
 SS_TABLE = """
 QTableView {
@@ -203,12 +204,7 @@ class ClubTableModel(QAbstractTableModel):
             if key == "reputation":
                 return str(value) if value else ""
             if key in ("squad_value", "avg_value"):
-                v = int(value) if value else 0
-                if v >= 1_000_000:
-                    return f"\u20ac{v / 1_000_000:.1f}M"
-                if v >= 1_000:
-                    return f"\u20ac{v // 1000}k"
-                return f"\u20ac{v}" if v > 0 else ""
+                return format_eur_from_gbp(value)
             return str(value) if value else ""
 
         if role == Qt.ItemDataRole.ForegroundRole:

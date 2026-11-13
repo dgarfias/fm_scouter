@@ -23,11 +23,13 @@ class MemoryRegion:
 def find_fm_process() -> ProcessInfo | None:
     """Scan /proc for the Wine/Proton process running fm.exe.
 
-    Multiple processes contain 'fm.exe' in their cmdline (Steam reaper,
-    Proton launcher, etc.).  We want the actual Wine process whose cmdline
-    starts with a Wine-style path (``Z:\\...\\fm.exe``) or whose exe
-    points to a wine/proton binary.
+    Launchers and steam.exe also mention fm.exe in their arguments and may
+    use wine-preloader. Only accept processes whose own executable, argv[0],
+    or process name identifies fm.exe. Wine drive letters are not fixed.
     """
+    def is_fm_executable(path: str) -> bool:
+        return path.replace("\\", "/").rsplit("/", 1)[-1].lower() == "fm.exe"
+
     candidates: list[ProcessInfo] = []
     for entry in os.listdir("/proc"):
         if not entry.isdigit():
@@ -38,9 +40,8 @@ def find_fm_process() -> ProcessInfo | None:
                 raw = f.read()
             if not raw:
                 continue
+            argv0 = raw.split(b"\x00", 1)[0].decode("utf-8", errors="replace")
             cmdline = raw.replace(b"\x00", b" ").decode("utf-8", errors="replace").strip()
-            if "fm.exe" not in cmdline.lower():
-                continue
             try:
                 exe_path = os.readlink(f"/proc/{pid}/exe")
             except OSError:
@@ -50,20 +51,14 @@ def find_fm_process() -> ProcessInfo | None:
                     name = f.read().strip()
             except OSError:
                 name = ""
+            if not any(is_fm_executable(value) for value in (argv0, exe_path, name)):
+                continue
             candidates.append(ProcessInfo(pid=pid, name=name, cmdline=cmdline, exe_path=exe_path))
         except (OSError, PermissionError):
             continue
 
     if not candidates:
         return None
-
-    for c in candidates:
-        if c.cmdline.startswith("Z:\\") or c.cmdline.startswith("z:\\"):
-            return c
-
-    for c in candidates:
-        if "wine" in c.exe_path.lower() or "proton" in c.exe_path.lower():
-            return c
 
     return candidates[-1]
 

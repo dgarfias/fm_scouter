@@ -31,6 +31,11 @@ class MemoryReader:
         self.pid = pid
         self._fd = -1
         self.has_batch_read = False
+        # Hybrid vm_readv fallback tuning:
+        # split a failing chunk a limited number of times, then degrade
+        # to per-address reads to avoid recursion overhead.
+        self._vm_split_min = 64
+        self._vm_split_max_depth = 2
 
     def open(self):
         self._fd = os.open(f"/proc/{self.pid}/mem", os.O_RDONLY)
@@ -80,6 +85,93 @@ class MemoryReader:
         except UnicodeDecodeError:
             return data.decode('latin-1')
 
+    def _vm_readv_u64_chunk(self, chunk: list[int], depth: int = 0) -> list[tuple[int, int]]:
+        n = len(chunk)
+        if n <= 0:
+            return []
+        buf = (ctypes.c_char * (n * 8))()
+        local = (_iovec * 1)(
+            _iovec(ctypes.cast(buf, ctypes.c_void_p), n * 8)
+        )
+        remote = (_iovec * n)(
+            *(_iovec(ctypes.c_void_p(addr), 8) for addr in chunk)
+        )
+        ret = _vm_readv(
+            self.pid,
+            local, 1,
+            remote, n,
+            0,
+        )
+        if ret == n * 8:
+            raw = bytes(buf)
+            out: list[tuple[int, int]] = []
+            for j, addr in enumerate(chunk):
+                val = struct.unpack('<Q', raw[j * 8:(j + 1) * 8])[0]
+                out.append((addr, val))
+            return out
+        if n == 1:
+            val = self.read_uint64(chunk[0])
+            return [(chunk[0], val)] if val is not None else []
+        if n <= self._vm_split_min or depth >= self._vm_split_max_depth:
+            out: list[tuple[int, int]] = []
+            for addr in chunk:
+                val = self.read_uint64(addr)
+                if val is not None:
+                    out.append((addr, val))
+            return out
+        mid = n // 2
+        return (
+            self._vm_readv_u64_chunk(chunk[:mid], depth + 1)
+            + self._vm_readv_u64_chunk(chunk[mid:], depth + 1)
+        )
+
+    def _vm_readv_fixed_chunk(
+        self,
+        chunk: list[int],
+        size: int,
+        depth: int = 0,
+    ) -> dict[int, bytes]:
+        n = len(chunk)
+        if n <= 0:
+            return {}
+        total = n * size
+        buf = (ctypes.c_char * total)()
+        local = (_iovec * 1)(
+            _iovec(ctypes.cast(buf, ctypes.c_void_p), total)
+        )
+        remote = (_iovec * n)(
+            *(_iovec(ctypes.c_void_p(addr), size) for addr in chunk)
+        )
+        ret = _vm_readv(
+            self.pid,
+            local, 1,
+            remote, n,
+            0,
+        )
+        if ret == total:
+            raw = bytes(buf)
+            out: dict[int, bytes] = {}
+            for j, addr in enumerate(chunk):
+                out[addr] = raw[j * size:(j + 1) * size]
+            return out
+        if n == 1:
+            data = self.read_bytes(chunk[0], size)
+            if data and len(data) == size:
+                return {chunk[0]: data}
+            return {}
+        if n <= self._vm_split_min or depth >= self._vm_split_max_depth:
+            out: dict[int, bytes] = {}
+            for addr in chunk:
+                data = self.read_bytes(addr, size)
+                if data and len(data) == size:
+                    out[addr] = data
+            return out
+        mid = n // 2
+        left = self._vm_readv_fixed_chunk(chunk[:mid], size, depth + 1)
+        right = self._vm_readv_fixed_chunk(chunk[mid:], size, depth + 1)
+        left.update(right)
+        return left
+
     def batch_read_u64(self, addresses: list[int]) -> list[tuple[int, int]]:
         if not addresses:
             return []
@@ -88,30 +180,7 @@ class MemoryReader:
             results = []
             for i in range(0, len(addresses), 1024):
                 chunk = addresses[i:i + 1024]
-                n = len(chunk)
-                buf = (ctypes.c_char * (n * 8))()
-                local = (_iovec * 1)(
-                    _iovec(ctypes.cast(buf, ctypes.c_void_p), n * 8)
-                )
-                remote = (_iovec * n)(
-                    *(_iovec(ctypes.c_void_p(addr), 8) for addr in chunk)
-                )
-                ret = _vm_readv(
-                    self.pid,
-                    local, 1,
-                    remote, n,
-                    0,
-                )
-                if ret == n * 8:
-                    raw = bytes(buf)
-                    for j, addr in enumerate(chunk):
-                        val = struct.unpack('<Q', raw[j * 8:(j + 1) * 8])[0]
-                        results.append((addr, val))
-                else:
-                    for addr in chunk:
-                        val = self.read_uint64(addr)
-                        if val is not None:
-                            results.append((addr, val))
+                results.extend(self._vm_readv_u64_chunk(chunk))
             return results
 
         results = []
@@ -129,30 +198,7 @@ class MemoryReader:
             results = {}
             for i in range(0, len(addresses), 1024):
                 chunk = addresses[i:i + 1024]
-                n = len(chunk)
-                total = n * size
-                buf = (ctypes.c_char * total)()
-                local = (_iovec * 1)(
-                    _iovec(ctypes.cast(buf, ctypes.c_void_p), total)
-                )
-                remote = (_iovec * n)(
-                    *(_iovec(ctypes.c_void_p(addr), size) for addr in chunk)
-                )
-                ret = _vm_readv(
-                    self.pid,
-                    local, 1,
-                    remote, n,
-                    0,
-                )
-                if ret == total:
-                    raw = bytes(buf)
-                    for j, addr in enumerate(chunk):
-                        results[addr] = raw[j * size:(j + 1) * size]
-                else:
-                    for addr in chunk:
-                        data = self.read_bytes(addr, size)
-                        if data and len(data) == size:
-                            results[addr] = data
+                results.update(self._vm_readv_fixed_chunk(chunk, size))
             return results
 
         results = {}

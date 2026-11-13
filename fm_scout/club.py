@@ -9,24 +9,19 @@ import struct
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from .offsets import ClubOffsets
+
 if TYPE_CHECKING:
     from .memory import MemoryReader
 
 __all__ = ["Club", "ClubReader", "enrich_clubs_with_players"]
 
-_CLUB_DB_OFFSET = 0x10
-_TEAM_DB_OFFSET = 0x98
-_TABLE_CONTAINER_OFFSET = 0x80
 _CLUB_READ_SIZE = 0x170
-
-_OFF_NAME = 0xC0
-_OFF_SHORT_NAME = 0xC8
-_OFF_NATION = 0xD8
-_OFF_NATION_NAME = 0x18
-
 _TEAM_READ_SIZE = 0xB0
-_TEAM_OFF_CLUB = 0x30
-_TEAM_OFF_REPUTATION = 0xA8
+
+
+def _default_club_offsets() -> ClubOffsets:
+    return ClubOffsets()
 
 
 @dataclass(slots=True)
@@ -157,9 +152,15 @@ def enrich_clubs_with_players(clubs: list["Club"], players: list, game_year: int
 
 
 class ClubReader:
-    def __init__(self, reader: "MemoryReader", dbt_root: int):
+    def __init__(
+        self,
+        reader: "MemoryReader",
+        dbt_root: int,
+        club_offsets: ClubOffsets | None = None,
+    ):
         self.reader = reader
         self.dbt_root = dbt_root
+        self.co = club_offsets or _default_club_offsets()
         self._nation_cache: dict[int, str] = {}
 
     def read_all_clubs(self) -> list[Club]:
@@ -202,10 +203,10 @@ class ClubReader:
     def _read_team_reputations(self) -> dict[int, int]:
         """Read team table and return {club_ptr: max_reputation}."""
         reader = self.reader
-        team_db = reader.read_pointer(self.dbt_root + _TEAM_DB_OFFSET)
+        team_db = reader.read_pointer(self.dbt_root + self.co.team_db_offset)
         if not team_db:
             return {}
-        table_ptr = reader.read_pointer(team_db + _TABLE_CONTAINER_OFFSET)
+        table_ptr = reader.read_pointer(team_db + self.co.table_container_offset)
         if not table_ptr:
             return {}
         start = reader.read_pointer(table_ptr)
@@ -234,8 +235,10 @@ class ClubReader:
                 tdata = bulk.get(tp)
                 if tdata is None or len(tdata) < _TEAM_READ_SIZE:
                     continue
-                club_ptr = struct.unpack_from("<Q", tdata, _TEAM_OFF_CLUB)[0]
-                rep = struct.unpack_from("<H", tdata, _TEAM_OFF_REPUTATION)[0]
+                club_ptr = struct.unpack_from("<Q", tdata, self.co.team_off_club)[0]
+                rep = struct.unpack_from(
+                    "<H", tdata, self.co.team_off_reputation
+                )[0]
                 if club_ptr and 0 < rep <= 10_000:
                     if rep > club_rep.get(club_ptr, 0):
                         club_rep[club_ptr] = rep
@@ -244,8 +247,10 @@ class ClubReader:
                 tdata = reader.read_bytes(tp, _TEAM_READ_SIZE)
                 if tdata is None or len(tdata) < _TEAM_READ_SIZE:
                     continue
-                club_ptr = struct.unpack_from("<Q", tdata, _TEAM_OFF_CLUB)[0]
-                rep = struct.unpack_from("<H", tdata, _TEAM_OFF_REPUTATION)[0]
+                club_ptr = struct.unpack_from("<Q", tdata, self.co.team_off_club)[0]
+                rep = struct.unpack_from(
+                    "<H", tdata, self.co.team_off_reputation
+                )[0]
                 if club_ptr and 0 < rep <= 10_000:
                     if rep > club_rep.get(club_ptr, 0):
                         club_rep[club_ptr] = rep
@@ -254,10 +259,10 @@ class ClubReader:
 
     def _read_club_table(self) -> list[int]:
         reader = self.reader
-        club_db = reader.read_pointer(self.dbt_root + _CLUB_DB_OFFSET)
+        club_db = reader.read_pointer(self.dbt_root + self.co.db_offset)
         if not club_db:
             return []
-        table_ptr = reader.read_pointer(club_db + _TABLE_CONTAINER_OFFSET)
+        table_ptr = reader.read_pointer(club_db + self.co.table_container_offset)
         if not table_ptr:
             return []
         start = reader.read_pointer(table_ptr)
@@ -285,14 +290,14 @@ class ClubReader:
         reader = self.reader
         read_string = reader.read_string
 
-        name_entry = struct.unpack_from("<Q", data, _OFF_NAME)[0]
+        name_entry = struct.unpack_from("<Q", data, self.co.off_name)[0]
         name = ""
         if name_entry:
             s = read_string(name_entry + 4, max_len=96)
             if s and s.isprintable():
                 name = s
 
-        short_name_entry = struct.unpack_from("<Q", data, _OFF_SHORT_NAME)[0]
+        short_name_entry = struct.unpack_from("<Q", data, self.co.off_short_name)[0]
         short_name = ""
         if short_name_entry:
             s = read_string(short_name_entry + 4, max_len=96)
@@ -302,14 +307,16 @@ class ClubReader:
         if not name and not short_name:
             return None
 
-        nation_ptr = struct.unpack_from("<Q", data, _OFF_NATION)[0]
+        nation_ptr = struct.unpack_from("<Q", data, self.co.off_nation)[0]
         nation = ""
         if nation_ptr:
             cached = nation_cache.get(nation_ptr)
             if cached is not None:
                 nation = cached
             else:
-                nation_name_entry = reader.read_pointer(nation_ptr + _OFF_NATION_NAME)
+                nation_name_entry = reader.read_pointer(
+                    nation_ptr + self.co.off_nation_name
+                )
                 if nation_name_entry:
                     s = read_string(nation_name_entry + 4, max_len=64)
                     if s and s.isprintable():

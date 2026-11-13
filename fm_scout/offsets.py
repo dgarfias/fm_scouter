@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 @dataclass
 class AttributeOffsets:
@@ -104,6 +104,43 @@ class StructOffsets:
 ATTR_OFFSETS = AttributeOffsets()
 STRUCT_OFFSETS = StructOffsets()
 
+@dataclass
+class ClubOffsets:
+    """Version-specific offsets for the club / team object chain."""
+
+    db_offset: int = 0x10            # dbtRoot -> club database
+    team_db_offset: int = 0x98       # dbtRoot -> team database
+    table_container_offset: int = 0x80  # database -> table container
+    off_name: int = 0xC0             # club -> name entry
+    off_short_name: int = 0xC8       # club -> short name entry
+    off_nation: int = 0xD8           # club -> nation pointer
+    off_nation_name: int = 0x18      # nation -> name entry
+    team_off_club: int = 0x30        # team -> club pointer
+    team_off_reputation: int = 0xA8  # team -> reputation (u16)
+
+
+@dataclass
+class VersionProfile:
+    """Everything that differs between FM builds.
+
+    A profile bundles the AOB signatures used to locate the game's data
+    roots plus the struct/attribute/club offsets for that specific build.
+    The scanner probes each known profile and adopts the first one whose
+    signatures resolve to structurally valid data.
+
+    ``aob`` keys: ``dbt_root``, ``game_date_ce``, ``game_date_fallback``,
+    ``human_manager``.
+    """
+
+    label: str = "FM24 24.4.2"
+    aob: dict[str, str] = field(default_factory=dict)
+    person_db_offset: int = 0x68     # dbtRoot -> person database
+    table_container_offset: int = 0x80  # database -> table container
+    struct: StructOffsets = field(default_factory=StructOffsets)
+    attribute_byte_offsets: dict[str, int] = field(default_factory=dict)
+    club: ClubOffsets = field(default_factory=ClubOffsets)
+
+
 # Attribute byte offsets inside the 54-byte plao.Patr block.
 # Source: FM24 CE table (FMCET24.CT, ptrPlayer -> plao.Patr+0x..)
 ATTRIBUTE_BYTE_OFFSETS: dict[str, int] = {
@@ -167,3 +204,21 @@ ATTRIBUTE_BYTE_OFFSETS: dict[str, int] = {
     'injury_proneness': 0x30,
     'versatility': 0x31,
 }
+
+
+DEFAULT_PROFILE = VersionProfile(
+    label="FM24 24.4.2",
+    aob={
+        "dbt_root": "48 8D 0D ?? ?? ?? ?? 48 8D 15",
+        "game_date_ce": "83 F2 01 8B 05 ?? ?? ?? ?? 66 09",
+        "game_date_fallback": "48 8B 05 ?? ?? ?? ?? 8B 00",
+        "human_manager": (
+            "48 8B 35 ?? ?? ?? ?? 48 8B 56 18 4C 8B 76 20 49 29 D6 B0 01 49 83 FE 10"
+        ),
+    },
+    person_db_offset=0x68,
+    table_container_offset=0x80,
+    struct=StructOffsets(),
+    attribute_byte_offsets=ATTRIBUTE_BYTE_OFFSETS,
+    club=ClubOffsets(),
+)
